@@ -52,9 +52,9 @@ jobs:
       # Only the crates our patches touch. A full workspace build is not
       # attempted here: `cloud_saves` does not compile upstream and is not a
       # dependency of drop-app, so `tauri build` never reaches it either.
-      - name: Test the process crate (ZC-003 launch parsing)
+      - name: Test our patched crates (ZC-003 parsing, ZC-004 Steam shortcuts)
         working-directory: ./desktop/src-tauri
-        run: cargo test -p process --lib
+        run: cargo test -p process -p steam --lib
 
       - name: Type-check the client
         working-directory: ./desktop/src-tauri

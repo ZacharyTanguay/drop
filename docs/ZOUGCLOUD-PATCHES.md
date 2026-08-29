@@ -27,10 +27,11 @@ git grep -n "ZOUGCLOUD("
 | ZC-001 | Windows tray / single-instance reopen | `custom` | `71eb89ec` |
 | ZC-002 | Game update state reaches the UI | `custom` | `4e0c1be2` |
 | ZC-003 | Windows launch-command parsing | `custom` | `0d513567` |
-| ZC-004 | Steam shortcut integration | *planned* | — |
+| ZC-004 | Steam shortcut integration | `custom` | `415daa63`, `c412152f`, `21a753a4` |
 | ZC-005 | Steam artwork | *planned* | — |
-| ZC-006 | Steam shortcut management | *planned* | — |
+| ZC-006 | Steam shortcut management | `custom` (in ZC-004) | `415daa63` |
 | — | Client-only guard (infrastructure) | `custom` | `469c7dbb` |
+| — | Build versioning and packaging | `custom` | `d97a0547`, `f9ae1a98`, `971c22d5` |
 
 ---
 
@@ -217,29 +218,91 @@ merged upstream work is never attributed to us. Verified in both directions
 
 ---
 
+## ZC-004 — Steam shortcut integration
+
+**Problem solved.** Drop is a good installer and a plain launcher. Steam gives
+members the overlay, controller support, playtime tracking and a library they
+already live in. Adding a Drop game to Steam by hand means finding the
+executable, getting the working directory right, and redoing it after a move.
+
+**Files.**
+- `desktop/src-tauri/steam/` (new crate: `error.rs`, `locate.rs`, `shortcuts.rs`)
+- `desktop/src-tauri/process/src/resolve.rs` (new)
+- `desktop/src-tauri/src/steam.rs` (new)
+- `desktop/src-tauri/Cargo.toml`, `process/src/lib.rs`, `src/lib.rs` (registration only)
+- `desktop/main/components/GameOptions/Steam.vue` (new), `GameOptionsModal.vue`
+
+**Why upstream is not enough.** Upstream has no Steam integration at all.
+
+**Client-only.** Confirmed: everything comes from the local database
+(install dir, launch command, args) and from Steam's own files under
+`userdata/<account>/config/`. No Drop server call, no new endpoint.
+
+**Design notes.**
+- The shortcut points at the **game** executable, never `drop-app.exe`, and
+  never at a `cmd.exe`/PowerShell wrapper — otherwise Steam records playtime for
+  the launcher or the shell instead of the game. This is why
+  `process::resolve` stops before `create_launch_process`.
+- Launch resolution reuses `ParsedCommand`, so ZC-003's handling of executables
+  with spaces applies identically here.
+- Emulator launches are skipped: there is no single executable to point at.
+- Writes are refused while Steam is running. Steam rewrites `shortcuts.vdf`
+  from memory on exit, so a write made now would be silently discarded.
+- `shortcuts.vdf` holds **only** non-Steam shortcuts. A genuine licence lives in
+  `steamapps/appmanifest_*.acf`, which this code never opens, so a real Steam
+  copy of the same game cannot be touched.
+- Rolling backups (5) plus an atomic rename, because a truncated write would
+  cost the member every non-Steam shortcut they have, Drop's or not.
+
+**Dependencies.** `steamlocate` 2.1.1 (maintained), `steam_shortcuts_util`
+1.1.8, `sysinfo`, `keyvalues-parser`. `steam_shortcuts_util` was last published
+in 2022; it was adopted after a spike confirmed it compiles on our nightly /
+edition 2024 and round-trips correctly, and it is backed by our own tests rather
+than trusted blindly. The binary VDF shortcut format has been stable for years.
+
+**Tests.** 12 unit tests in the `steam` crate covering app-id stability,
+Steam's quoting convention, round-trip, deduplication, preservation of unrelated
+shortcuts, backups, and removal. Manual TEST 7, 8, 10 in the test plan.
+
+Also verified against the real Steam install on the build machine: two accounts
+found with persona names, existing hand-made shortcut correctly reported as not
+Drop-managed.
+
+**ZougCloud commits.** `415daa63` (crate), `c412152f` (launch resolution),
+`21a753a4` (commands + UI)
+
+**State.** `custom` — upstream has nothing comparable.
+
+---
+
+## ZC-006 — Steam shortcut management
+
+Delivered as part of ZC-004 rather than as a separate patch, because the
+guarantees are properties of the same write path.
+
+- **Already added?** `steam_game_status` reports the existing shortcut.
+- **Open in Steam.** `steam://nav/games/details/<id>`; safe while Steam runs.
+- **Remove.** Explicit user action only. A Drop game update never removes a
+  shortcut.
+- **A moved game keeps its identity.** `upsert_shortcut` reuses the *existing*
+  app id instead of the freshly generated one. Steam keys playtime on that id
+  and names artwork files after it, so reusing it preserves both. Matching order
+  is app id → Drop-tagged shortcut with the same name → executable path; the
+  middle rule is what catches a changed install directory.
+
+Covered by `a_moved_game_keeps_its_app_id_and_playtime`. Manual TEST 11.
+
+**State.** `custom`
+
+---
+
 ## Planned
 
-### ZC-004 — Steam shortcut integration
-Add an installed Drop game to Steam as a non-Steam shortcut, pointing at the
-**game** executable (never `drop-app.exe`, or playtime would be attributed to
-the launcher). Feasibility confirmed client-side: install dir, launch command,
-args and working directory are all already in the local database.
-
 ### ZC-005 — Steam artwork
-Grid/capsule, hero, logo and icon for the shortcut. SteamGridDB as an optional
-source behind a user-supplied API key (never committed, never hardcoded), with a
-fallback to Drop's own images — the `Game` model already carries
-`m_icon_object_id`, `m_banner_object_id`, `m_cover_object_id` and the library /
-carousel image ID lists.
-
-### ZC-006 — Steam shortcut management
-Detect whether a game is already added, "Open in Steam", explicit
-"Remove from Steam". A Drop game update must **never** silently remove the
-shortcut or its artwork; only a changed install path updates the entry.
-
-**Shared risk for ZC-004/005/006.** `shortcuts.vdf` is binary VDF and Steam
-rewrites it on exit. Candidate crates: `steamlocate` 2.1.1 (actively
-maintained, 2026-08) for discovery; `steam_shortcuts_util` 1.1.8 for the binary
-format — widely used but last published 2022-05, so it needs an explicit
-evaluation before adoption. Back up before writing, and never write while Steam
-may overwrite.
+Grid/capsule, hero, logo and icon for the shortcut, written to
+`userdata/<account>/config/grid/` (`steam_grid_dir` already exposes the path).
+SteamGridDB as an optional source behind a user-supplied API key (never
+committed, never hardcoded), with a fallback to Drop's own images — the `Game`
+model already carries `m_icon_object_id`, `m_banner_object_id`,
+`m_cover_object_id` and the library / carousel image ID lists. Must work with
+no key configured.
