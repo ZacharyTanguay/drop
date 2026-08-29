@@ -21,6 +21,12 @@ All three are fixable **inside the client**. None of them needs a server change.
 That is the entire premise of this fork: get a better client without giving up
 the ability to pull future Drop OSS releases.
 
+On top of the fixes, one addition: optionally adding an installed game to Steam
+as a non-Steam shortcut, with artwork. Drop stays the installer, updater and
+version manager; Steam becomes the launcher for members who want the overlay,
+controller support and playtime tracking. Also entirely client-side — it reads
+and writes Steam's own files and, optionally, SteamGridDB.
+
 ### What we deliberately do *not* do
 
 - No server fork, no new API, no DB migration, no custom Docker image.
@@ -266,15 +272,20 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-client-only.ps1
 
 ## Publishing an installer
 
-1. Confirm the working tree is clean and tests pass.
-2. Build (above).
-3. Copy the NSIS `.exe` out of `target/` into a keep-safe directory.
-4. Generate `SHA256SUMS.txt` and `BUILD-INFO.txt` next to it, recording the
+1. Bump the version in **both** `desktop/src-tauri/tauri.conf.json` and
+   `desktop/src-tauri/Cargo.toml`, then run `cargo check` in
+   `desktop/src-tauri` **before committing**. Cargo rewrites `Cargo.lock` with
+   the new `drop-app` version; committing without that step leaves the lockfile
+   one commit behind, and `package-release.ps1` will refuse the build.
+2. Confirm the working tree is clean and tests pass.
+3. Build (above).
+4. Copy the NSIS `.exe` out of `target/` into a keep-safe directory.
+5. Generate `SHA256SUMS.txt` and `BUILD-INFO.txt` next to it, recording the
    upstream base commit, the ZougCloud commit, date, toolchain versions,
    architecture, SHA-256 and the exact build command.
-5. Tag the commit you shipped (e.g. `zougcloud/0.4.0-zc.1`) so the AGPL source
+6. Tag the commit you shipped (e.g. `zougcloud/0.4.0-zc.1`) so the AGPL source
    offer points at something precise.
-6. Hand the `.exe` to members.
+7. Hand the `.exe` to members.
 
 The installer upgrades a previous ZougCloud install in place. It preserves
 `%APPDATA%\drop` — games, database, config — because the Tauri NSIS uninstaller
