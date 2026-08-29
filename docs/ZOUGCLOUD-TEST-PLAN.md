@@ -14,7 +14,7 @@ Run before distributing any installer to members.
 **Before starting**
 
 ```bash
-cd desktop/src-tauri && cargo test -p process --lib
+cd desktop/src-tauri && cargo test -p process -p steam --lib
 ```
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/verify-client-only.ps1
@@ -22,6 +22,10 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-client-only.ps1
 
 Back up `%APPDATA%\drop\drop.db`. Note the installer's SHA-256 so you can prove
 later which build was tested.
+
+If you are going to run the Steam tests, also copy
+`<Steam>\userdata\<account>\config\shortcuts.vdf` somewhere safe first. Drop
+keeps its own rolling backups, but your own copy costs nothing.
 
 Record for each test: **PASS / FAIL**, date, build SHA-256, and for a failure
 the relevant lines of `%APPDATA%\drop\drop.log` plus any
@@ -34,8 +38,9 @@ the relevant lines of `%APPDATA%\drop\drop.log` plus any
 | ID | Covers | Command |
 |---|---|---|
 | A-1 | ZC-003 Windows tokenising, quoting, round-trip, coalescing (15 tests) | `cargo test -p process --lib` |
-| A-2 | Client-only rule, both directions | `scripts/verify-client-only.ps1` |
-| A-3 | Client compiles | `cargo check` (in `desktop/src-tauri`) |
+| A-2 | ZC-004/006 Steam app-id stability, dedup, backups, preserved playtime (12 tests) | `cargo test -p steam --lib` |
+| A-3 | Client-only rule, both directions | `scripts/verify-client-only.ps1` |
+| A-4 | Client compiles | `cargo check` (in `desktop/src-tauri`) |
 
 > Do **not** use `cargo check --workspace`: `cloud_saves` does not compile
 > upstream and is not a dependency of `drop-app`, so `tauri build` never
@@ -151,22 +156,52 @@ or re-render on every poll — the event only fires on an actual transition.
 
 ---
 
-## TEST 7 — Add to Steam *(ZC-004 — not yet implemented)*
+## TEST 7 — Add to Steam *(ZC-004)*
+
+> **Close Steam completely first** (check the tray). Steam rewrites
+> `shortcuts.vdf` from memory when it exits, so Drop refuses to write while it
+> is running. That refusal is itself worth testing — see 7d.
 
 1. Install a game via Drop.
-2. Use **Add to Steam**.
-3. Restart Steam.
+2. Open the game's options → **Steam** tab.
+3. Confirm the panel lists your Steam account and the launcher, and shows the
+   resolved target path under "Steam will run:".
+4. Click **Add to Steam**.
+5. Start Steam.
 
-**Expected.** The game appears in the Steam library as a non-Steam shortcut.
-Adding twice does not create a duplicate. No existing genuine Steam licence for
-the same title is modified.
+**Expected.** The game appears in the Steam library as a non-Steam shortcut,
+under a **Drop** category.
+
+**7b — no duplicate.** Close Steam, click **Update shortcut**, reopen Steam.
+Exactly one entry.
+
+**7c — other shortcuts survive.** If you already had non-Steam shortcuts (this
+machine has "Cyberpunk 2077 (GOG)"), they must still be present and unchanged.
+
+**7d — refusal while Steam runs.** With Steam open, the panel shows a warning
+and **Add to Steam** is disabled.
+
+**7e — genuine licences untouched.** If you own the same game on Steam for
+real, that entry is unaffected. (By construction: `shortcuts.vdf` holds only
+non-Steam shortcuts; real licences live in `steamapps/appmanifest_*.acf`, which
+Drop never opens.)
+
+**Recovery.** Backups are kept at
+`<Steam>\userdata\<account>\config\shortcuts.vdf.drop-backup-<timestamp>`
+(5 rolling). Restore one by renaming it over `shortcuts.vdf` with Steam closed.
 
 ---
 
 ## TEST 8 — Steam shows the game correctly *(ZC-004)*
 
-**Expected.** Correct name, correct target executable, correct working
-directory, correct arguments.
+In Steam, right-click the shortcut → Properties.
+
+**Expected.** Correct name; **Target** is the game executable — *not*
+`drop-app.exe`, *not* `cmd.exe`, *not* `powershell.exe`; correct **Start in**
+directory; correct launch arguments.
+
+**Also check a game whose executable has a space** (Graveyard Keeper): the
+target must be the full `...\Graveyard Keeper.exe`, quoted.
 
 ---
 
@@ -184,18 +219,39 @@ Press **Play** in Steam.
 
 **Expected.** The game starts directly. Playtime accrues against the game.
 `drop-app.exe` is **not** launched — otherwise Steam would be timing the
-launcher instead of the game.
+launcher instead of the game. Check the Task Manager while the game runs: no
+`drop-app.exe` spawned by Steam, no stray `cmd.exe`.
+
+**Also check.** The Steam overlay (Shift+Tab) opens over the game.
 
 ---
 
 ## TEST 11 — A Drop update preserves the Steam shortcut *(ZC-006)*
 
-1. Add a game to Steam.
-2. Update it through Drop to a new version.
+1. Add a game to Steam and play it briefly so Steam records some playtime.
+2. Note the shortcut's AppID (visible in the shortcut's Steam URL, or in the
+   `grid` filenames).
+3. Update the game through Drop to a new version.
+4. Reopen the game's **Steam** tab in Drop.
 
-**Expected.** Shortcut, artwork, identity and Steam playtime all survive. The
-shortcut is only rewritten if the install path actually changed. It is **never**
-removed automatically.
+**Expected.** The shortcut still exists, still has its playtime, and Drop still
+reports it as added. Nothing is removed automatically.
+
+**If the install path changed**, click **Update shortcut** and confirm the
+**AppID is unchanged** — Steam keys playtime on that id and names artwork files
+after it, so a new id would silently orphan both. This is the single most
+important assertion in this test.
+
+---
+
+## TEST 12 — Multiple Steam accounts *(ZC-004)*
+
+Only applicable on a machine with more than one Steam account (this build
+machine has two).
+
+**Expected.** The account selector lists them by persona name, defaults to the
+most recently used, and switching it re-reads that account's shortcuts — a game
+added for one account is not reported as added for the other.
 
 ---
 
