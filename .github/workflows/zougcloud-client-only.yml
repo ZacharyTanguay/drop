@@ -1,0 +1,61 @@
+# ZOUGCLOUD: guard rails for the client-only fork.
+#
+# This fork only exists to improve the Windows Desktop client while the Drop
+# server stays byte-for-byte upstream. This workflow makes that mechanical:
+# a PR that edits server/, backend/ or any shared library fails here rather
+# than being caught in review (or, worse, at deploy time).
+#
+# Namespaced `zougcloud-` so it is trivially distinguishable from upstream
+# workflows during a rebase, and so scripts/verify-client-only.ps1 can
+# allow-list it without opening up .github/workflows wholesale.
+name: "ZougCloud: client-only guard"
+
+on:
+  push:
+    branches: ["zougcloud/**"]
+  pull_request:
+    branches: ["zougcloud/**"]
+  workflow_dispatch:
+
+jobs:
+  client-only:
+    name: No server changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the merge base against upstream is reachable.
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Drop-OSS/drop.git || true
+          git fetch upstream develop
+
+      - name: Verify the fork is still client-only
+        shell: pwsh
+        run: ./scripts/verify-client-only.ps1 -Base upstream/develop
+
+  desktop-tests:
+    name: Desktop unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches the toolchain pinned by desktop/src-tauri/rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./desktop/src-tauri -> target"
+
+      # Only the crates our patches touch. A full workspace build is not
+      # attempted here: `cloud_saves` does not compile upstream and is not a
+      # dependency of drop-app, so `tauri build` never reaches it either.
+      - name: Test the process crate (ZC-003 launch parsing)
+        working-directory: ./desktop/src-tauri
+        run: cargo test -p process --lib
+
+      - name: Type-check the client
+        working-directory: ./desktop/src-tauri
+        run: cargo check
