@@ -14,12 +14,17 @@
 //! Real Steam licences live in `steamapps/appmanifest_*.acf` and are never
 //! opened, so a genuine copy of the same game cannot be affected.
 
+pub mod artwork;
 pub mod error;
 pub mod locate;
 pub mod shortcuts;
 
+pub use artwork::{ArtworkKind, installed_artwork, remove_artwork, write_artwork};
 pub use error::SteamError;
-pub use locate::{SteamInstall, SteamUser, is_steam_running, locate_steam};
+pub use locate::{
+    SteamInstall, SteamUser, is_steam_running, launch_steam, locate_steam, request_steam_exit,
+    steam_executable, wait_for_steam_exit,
+};
 pub use shortcuts::{
     DROP_TAG, ShortcutRecord, ShortcutRequest, app_id_for, find_shortcut, list_shortcuts,
     remove_shortcut, run_game_id, steam_quote, upsert_shortcut,
