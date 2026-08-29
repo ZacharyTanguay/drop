@@ -14,7 +14,7 @@ Run before distributing any installer to members.
 **Before starting**
 
 ```bash
-cd desktop/src-tauri && cargo test -p process -p steam --lib
+cd desktop/src-tauri && cargo test -p process -p steam -p playtime --lib
 ```
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts/verify-client-only.ps1
@@ -38,9 +38,10 @@ the relevant lines of `%APPDATA%\drop\drop.log` plus any
 | ID | Covers | Command |
 |---|---|---|
 | A-1 | ZC-003 Windows tokenising, quoting, round-trip, coalescing (15 tests) | `cargo test -p process --lib` |
-| A-2 | ZC-004/005/006 Steam app-id stability, dedup, backups, preserved playtime, artwork slots (19 tests) | `cargo test -p steam --lib` |
-| A-3 | Client-only rule, both directions | `scripts/verify-client-only.ps1` |
-| A-4 | Client compiles | `cargo check` (in `desktop/src-tauri`) |
+| A-2 | ZC-004/005/006/009 Steam app-id stability, dedup, backups, artwork slots, read-only open (21 tests) | `cargo test -p steam --lib` |
+| A-3 | ZC-008 sessions, no-double-count, heartbeat recovery, atomic writes, formatting (23 tests) | `cargo test -p playtime --lib` |
+| A-4 | Client-only rule, both directions | `scripts/verify-client-only.ps1` |
+| A-5 | Client compiles | `cargo check` (in `desktop/src-tauri`) |
 
 > Do **not** use `cargo check --workspace`: `cloud_saves` does not compile
 > upstream and is not a dependency of `drop-app`, so `tauri build` never
@@ -272,7 +273,114 @@ important assertion in this test.
 
 ---
 
-## TEST 12 — Multiple Steam accounts *(ZC-004)*
+
+## TEST 12 — Playtime via Drop *(ZC-008)*
+
+1. Open the Graveyard Keeper page and note the playtime (or its absence).
+2. Launch with **PLAY** in Drop.
+3. Play for about **2 minutes**.
+4. Quit the game.
+
+**Expected.** The line beside "Up to date" gains roughly 2 minutes. Under a
+minute it reads *"Less than a minute played"*; over one, *"2 min played"*.
+
+**Also check.** Hovering the playtime shows *"Last played today"*.
+
+**12b — a failed launch credits nothing.** Point the launch command at a file
+that does not exist, press Play, let it fail, and confirm the playtime is
+unchanged. The session only opens after a successful spawn.
+
+---
+
+## TEST 13 — Playtime via Steam *(ZC-008, the double-count test)*
+
+Requires the Steam shortcut to point at the **real executable**
+(`Graveyard Keeper.exe`), not at `Launch.bat` — the watcher only follows direct
+`.exe` targets.
+
+1. Leave Drop running (tray is fine).
+2. Launch Graveyard Keeper **from Steam**.
+3. Play for about **2 minutes**.
+4. Quit.
+5. Wait ~10 seconds for the next watcher poll.
+
+**Expected.** Drop's playtime grows by about 2 minutes. `drop.log` shows
+`watcher saw <id> start outside Drop`.
+
+**13b — no double counting.** Launch the same game from **Drop** this time,
+with Drop still running. `drop.log` must **not** show the watcher line: it sees
+the process but finds a session already open and leaves it alone. Playtime grows
+once, not twice.
+
+---
+
+## TEST 14 — Persistence *(ZC-008)*
+
+1. Note the playtime.
+2. Quit Drop completely (tray → Quit) and start it again.
+
+**Expected.** Identical total. The file is at
+`%APPDATA%\drop\zougcloud\playtime.json`; it should be valid JSON with
+`"schemaVersion": 1` and no `.tmp` file beside it.
+
+---
+
+## TEST 15 — Crash recovery *(ZC-008, the one that matters)*
+
+This guards against phantom hours, the failure mode that would quietly ruin the
+numbers.
+
+1. Launch a game from Drop and let it run **~3 minutes**.
+2. Kill `drop-app.exe` from the Task Manager (simulating a crash) while the game
+   is still running.
+3. Quit the game.
+4. **Wait at least 15 minutes** — the longer the better, since the point is the
+   gap.
+5. Start Drop again.
+
+**Expected.** The playtime grows by roughly **3 minutes** — the time up to the
+last heartbeat — **not** by the whole elapsed wall-clock time. `drop.log` shows
+`recovering orphaned session … crediting Ns up to the last heartbeat`.
+
+**A failure here looks like:** playtime jumping by 15+ minutes, or by hours if
+the machine was left off overnight.
+
+---
+
+## TEST 16 — Open in Steam *(ZC-009)*
+
+From the Graveyard Keeper page, click **OPEN IN STEAM**.
+
+**Expected.** Steam comes to the foreground, ideally on Graveyard Keeper's
+library page. **The game must not start.**
+
+**Known limitation.** Steam's handling of `steam://nav/games/details/<id>` has
+varied across client versions. If it does not select the entry, Steam still
+opens on the library — that is the accepted fallback, and faking the selection
+by editing a Steam database is deliberately excluded.
+
+**16b — visibility follows reality.** Remove the shortcut from inside Steam
+(right-click → Manage → Remove), then reload the Drop game page. The button must
+be **gone** — it is driven by reading Steam's shortcuts file, not a cached flag.
+
+**16c — hidden when Steam is absent.** On a machine without Steam, no button.
+
+---
+
+## TEST 17 — Steam identity is untouched *(ZC-009)*
+
+**Before** running TESTS 12–16, record Graveyard Keeper's shortcut AppID (visible
+in the `grid` filenames, e.g. `3617084025.png`).
+
+**After** all of them:
+
+**Expected.** The AppID is **strictly identical**, the `grid` artwork files still
+exist with the same names, and the entry keeps any Steam playtime and controller
+settings. Nothing in ZC-008 or ZC-009 writes to `shortcuts.vdf` at all.
+
+---
+
+## TEST 18 — Multiple Steam accounts *(ZC-004)*
 
 Only applicable on a machine with more than one Steam account (this build
 machine has two).
@@ -282,7 +390,6 @@ most recently used, and switching it re-reads that account's shortcuts — a gam
 added for one account is not reported as added for the other.
 
 ---
-
 ## Installer checks
 
 | ID | Check | Expected |

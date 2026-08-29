@@ -179,7 +179,19 @@ files it lists and check whether the defect is gone. Useful probes:
 git grep -n "single_instance::init" upstream/develop -- desktop/src-tauri/src/lib.rs   # ZC-001
 git diff <our-base> upstream/develop -- desktop/src-tauri/src/updates.rs               # ZC-002
 git diff <our-base> upstream/develop -- desktop/src-tauri/process/src/parser.rs        # ZC-003
+git grep -n -i "steam" upstream/develop -- desktop/src-tauri/Cargo.toml                # ZC-004/005/006
+git grep -n -i "playtime\|play_time" upstream/develop -- desktop/src-tauri desktop/main # ZC-008/009
 ```
+
+ZC-004 through ZC-009 are **additions**, not fixes to upstream defects, so they
+are not "fixed upstream" in the usual sense. What retires them is upstream
+shipping an equivalent feature — the greps above are how you notice that. If it
+happens, prefer upstream's version and delete ours.
+
+**ZC-007 is `abandoned`, not pending.** Do not re-investigate GOG Galaxy unless
+GOG has actually granted a Drop/ZougCloud Platform ID; the reasoning is in
+`docs/ZOUGCLOUD-PATCHES.md` and has not changed. **ZC-010 must not be created** —
+the Steam icon problem was a launch-command misconfiguration, not a code defect.
 
 **Removing a patch upstream has fixed is the point of this exercise.** A fork
 that only grows is a fork that eventually cannot be rebased.
@@ -208,7 +220,7 @@ the commit — never the script.
 ## Step 11 — Test
 
 ```bash
-cd desktop/src-tauri && cargo test -p process --lib
+cd desktop/src-tauri && cargo test -p process -p steam -p playtime --lib
 cd desktop/src-tauri && cargo check
 ```
 
@@ -262,6 +274,10 @@ PATCH STATUS
   ZC-001  still required
   ZC-002  fixed upstream, patch removed
   ZC-003  conflict, review needed — <what to look at>
+  ZC-007  abandoned (no GOG Platform ID) — do not reopen
+  ZC-008  still required
+  ZC-009  still required
+  ZC-010  must not be created
   ZC-004  still required
   ...
 

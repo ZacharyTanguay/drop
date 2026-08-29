@@ -21,7 +21,11 @@ All three are fixable **inside the client**. None of them needs a server change.
 That is the entire premise of this fork: get a better client without giving up
 the ability to pull future Drop OSS releases.
 
-On top of the fixes, one addition: optionally adding an installed game to Steam
+On top of the fixes, two additions. **Local playtime**: Drop counts how long each
+game has been played, on this machine, independent of Steam and of the server --
+including games started from a Steam shortcut while Drop sits in the tray.
+
+And optionally adding an installed game to Steam
 as a non-Steam shortcut, with artwork. Drop stays the installer, updater and
 version manager; Steam becomes the launcher for members who want the overlay,
 controller support and playtime tracking. Also entirely client-side — it reads

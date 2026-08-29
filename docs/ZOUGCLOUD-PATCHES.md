@@ -30,6 +30,10 @@ git grep -n "ZOUGCLOUD("
 | ZC-004 | Steam shortcut integration | `custom` | `415daa63`, `c412152f`, `21a753a4` |
 | ZC-005 | Steam artwork | `custom` | `3ea8b514`, `fed5ac6e` |
 | ZC-006 | Steam shortcut management | `custom` (in ZC-004) | `415daa63` |
+| ZC-007 | GOG Galaxy integration | **`abandoned`** | — |
+| ZC-008 | Local playtime tracking | `custom` | `9a63e2f3`, `3bcac577` |
+| ZC-009 | Open in Steam on game pages | `custom` | `700efb32` |
+| ZC-010 | Steam shortcut icon | **not created** — see note below | — |
 | — | Client-only guard (infrastructure) | `custom` | `469c7dbb` |
 | — | Build versioning and packaging | `custom` | `d97a0547`, `f9ae1a98`, `971c22d5` |
 
@@ -352,3 +356,148 @@ Manual TEST 9.
 **ZougCloud commits.** `3ea8b514` (crate), `fed5ac6e` (fetching + UI)
 
 **State.** `custom`
+
+---
+
+## ZC-007 — GOG Galaxy integration — **ABANDONED / BLOCKED**
+
+**Reason.** GOG Galaxy requires every integration to declare a **Platform ID
+from a fixed official list**, and there is no Drop or ZougCloud entry on it —
+nor any generic, custom or community option among the 99 IDs.
+
+New IDs are granted only by GOG. Their process
+([issue #160](https://github.com/gogcom/galaxy-integrations-python-api/issues/160),
+still open) states it *"requires business acceptance, handlers in other
+repositories and preparation of platform metadata"*; dozens of community
+requests have sat there unresolved for years.
+
+The only available workaround is `test`, documented as **"Testing purposes"**.
+Galaxy groups the library by platform and takes those labels from its own
+metadata — the local Galaxy database on the build machine holds "Epic Games
+Store" and "Humble Bundle" but nothing for `test`. Members' ZougCloud games
+would therefore land in an unnamed test bucket rather than under a ZougCloud
+identity, shared with any other community plugin that also picked `test`. The
+manifest `name` shows in the integrations list, not as the library platform.
+
+Patching Galaxy's own database to fake a platform is excluded: fragile, and it
+would break on any Galaxy update.
+
+**Do not reopen this without a granted Platform ID.** If GOG ever assigns one,
+the work becomes small: the local contract built for ZC-008
+(`%APPDATA%\drop\zougcloud\`) is already the versioned, Drop-independent source
+a plugin would read.
+
+**State.** `abandoned`
+
+---
+
+## ZC-008 — Local playtime tracking
+
+**Problem solved.** Drop had no idea how long anyone had played. Steam only
+counts what it launched, and the Drop server holds nothing.
+
+**Files.**
+- `desktop/src-tauri/playtime/` (new crate: `model.rs`, `store.rs`, `tracker.rs`, `format.rs`)
+- `desktop/src-tauri/src/playtime.rs` (new: command + watcher)
+- `desktop/main/composables/zougcloud.ts`, `desktop/main/components/ZougcloudPlaytime.vue` (new)
+- `desktop/src-tauri/process/src/process_manager.rs` (2 hooks), `src/lib.rs`,
+  `desktop/main/pages/library/[id]/index.vue` (registration and display only)
+
+**Why upstream is not enough.** Upstream has no playtime concept at all.
+
+**Client-only.** Nothing leaves the machine. Stored at
+`%APPDATA%\drop\zougcloud\playtime.json`, deliberately **outside `drop.db`** so
+an upstream schema change can never cost a member their hours and so a rebase
+does not touch it.
+
+**The invariant: one active session per game, with an owner.**
+`begin_session` is a no-op when a session is already open; `end_session` only
+closes one belonging to the same owner. Drop's process manager (`Drop`) and the
+external watcher (`Watcher`) therefore cannot double count, and this is a
+property of the tracker rather than of careful call ordering.
+
+- **Launched from Drop** — the session opens *after a successful spawn*, not
+  when Play is clicked, so a failed launch credits nothing; it closes when the
+  process exits.
+- **Launched from Steam** — a watcher polls every **7 s** (coarse on purpose: it
+  runs for the life of the app, and seconds of imprecision do not matter here).
+  The watch list is rebuilt only every 60 s, since resolving launch targets
+  touches the database and disk.
+
+**Crash recovery.** A session is credited up to its **last heartbeat**, never up
+to the current time. A machine can sit powered off overnight between a crash and
+the next launch; crediting that gap would invent hours nobody played. A session
+that crashed before its first heartbeat credits nothing.
+
+**Storage safety.** Writes go through a temp file, an `fsync` and an atomic
+rename. A file that cannot be parsed is moved to
+`playtime.corrupt-<timestamp>.json` and a fresh one started — never silently
+replaced, because the original may still be salvageable by hand.
+
+**Known limitation.** External tracking covers **direct `.exe` targets only**. A
+launch command that goes through a `.bat`, `cmd`, PowerShell or an emulator
+spawns a process we did not name and cannot attribute to a game, so those are
+skipped rather than guessed at. Games launched *from Drop* are tracked
+regardless of launch type, because the process manager knows the lifecycle.
+
+**Tests.** 23 unit tests: session arithmetic, no-double-count, orphan recovery
+stopping at the heartbeat, backwards clocks, atomic writes, corrupt-file
+preservation, persistence, and every formatting branch. Manual TEST 12–15.
+
+**ZougCloud commits.** `9a63e2f3` (crate), `3bcac577` (hooks + watcher)
+
+**State.** `custom`
+
+---
+
+## ZC-009 — Open in Steam on game pages
+
+**Problem solved.** The Steam integration existed but was reachable only from
+the game options modal. The game page now shows playtime beside the update
+status, and an **Open in Steam** button beside Play.
+
+**Files.** `desktop/main/composables/zougcloud.ts`,
+`desktop/main/components/ZougcloudPlaytime.vue`,
+`desktop/main/pages/library/[id]/index.vue`,
+`desktop/src-tauri/steam/src/shortcuts.rs`, `desktop/src-tauri/src/steam.rs`
+
+**Design notes.**
+- Visibility comes from reading Steam's own shortcuts file on each refresh, not
+  from a cached flag: deleting the shortcut from inside Steam must make the
+  button disappear, and a local boolean would keep claiming it exists.
+- Fixed the URL: `steam_open_shortcut` was passing the 64-bit `run_game_id` to
+  `nav/games/details`. That form belongs to `rungameid`, which **launches** the
+  game — the opposite of what this button is for. The library keys non-Steam
+  entries on the 32-bit shortcut id.
+- **Read-only by construction.** There is no write path, which is what preserves
+  the AppID, artwork, Steam playtime and controller settings.
+- The button row gained `flex-wrap` so a fourth button wraps on narrow windows.
+
+**Limitation.** Steam's handling of `steam://nav/games/details/<id>` has been
+unreliable across client versions. The failure mode is benign — Steam comes to
+the foreground on the library rather than doing nothing — so there is no
+fallback to detect or code. Faking selection by editing a Steam database is
+excluded.
+
+**Tests.** 2 unit tests: the URL navigates and never launches, and opening
+leaves the shortcuts file, artwork and AppID untouched. Manual TEST 16–17.
+
+**ZougCloud commit.** `700efb32`
+
+**State.** `custom`
+
+---
+
+## ZC-010 — Steam shortcut icon — **not created, and should not be**
+
+Steam showed a generic monitor icon in its left-hand list for Graveyard Keeper.
+The cause was not our shortcut writer: the launch command still pointed at
+`Launch.bat`, a historical workaround from before ZC-003 fixed executables with
+spaces. A `.bat` has no embedded icon, so Steam had nothing to show.
+
+Pointing the launch command at the real `Graveyard Keeper.exe` makes Steam pick
+up the game's own icon natively.
+
+**No ZougCloud patch is required.** Do not add icon extraction, local `.ico`
+generation or an icon repair path — they would all be solving a configuration
+mistake in code.
