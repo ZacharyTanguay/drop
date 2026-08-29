@@ -21,6 +21,7 @@ pub mod format;
 mod parser;
 pub mod process_handlers;
 pub mod process_manager;
+pub mod resolve; // ZOUGCLOUD(ZC-004)
 
 pub struct ProcessManagerWrapper(OnceLock<Mutex<ProcessManager<'static>>>);
 impl ProcessManagerWrapper {
