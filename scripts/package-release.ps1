@@ -62,6 +62,14 @@ if ($LASTEXITCODE -eq 0) {
 
 $patches = @(git log --oneline "$upstreamBase..HEAD" --reverse)
 
+# Resolved here rather than inline in the here-string below: a redirection
+# inside $() there is parsed by PowerShell and `2>$null` would create a file
+# literally named "$null" in the repo root.
+$originUrl = (git remote get-url origin)
+if ($LASTEXITCODE -ne 0) { $originUrl = '<no origin remote>' }
+$upstreamUrl = (git remote get-url upstream)
+if ($LASTEXITCODE -ne 0) { $upstreamUrl = '<no upstream remote>' }
+
 # --- artefact --------------------------------------------------------------
 
 $nsisDir = Join-Path $repoRoot 'desktop\src-tauri\target\release\bundle\nsis'
@@ -124,8 +132,8 @@ ZougCloud commit : $zcCommit
 ZougCloud branch : $zcBranch
 Upstream base    : $upstreamBase
 Upstream date    : $upstreamDate
-Fork remote      : $(git remote get-url origin 2>`$null)
-Upstream remote  : $(git remote get-url upstream 2>`$null)
+Fork remote      : $originUrl
+Upstream remote  : $upstreamUrl
 Working tree     : $(if ($dirty.Count -eq 0) { 'clean' } else { "DIRTY ($($dirty.Count) file(s)) - NOT REPRODUCIBLE" })
 
 Target server    : ghcr.io/drop-oss/drop:0.4.0-rc-5
@@ -200,7 +208,7 @@ GNU Affero General Public License v3 (desktop/LICENSE, (C) 2024 DecDuck).
 This binary is a MODIFIED version of Drop Desktop. Under AGPL s6, anyone given
 this installer is entitled to the corresponding source, which is commit
 $zcCommit
-at $(git remote get-url origin 2>`$null)
+at $originUrl
 
 Upstream: https://github.com/Drop-OSS/drop
 ================================================================
