@@ -38,7 +38,7 @@ the relevant lines of `%APPDATA%\drop\drop.log` plus any
 | ID | Covers | Command |
 |---|---|---|
 | A-1 | ZC-003 Windows tokenising, quoting, round-trip, coalescing (15 tests) | `cargo test -p process --lib` |
-| A-2 | ZC-004/006 Steam app-id stability, dedup, backups, preserved playtime (12 tests) | `cargo test -p steam --lib` |
+| A-2 | ZC-004/005/006 Steam app-id stability, dedup, backups, preserved playtime, artwork slots (19 tests) | `cargo test -p steam --lib` |
 | A-3 | Client-only rule, both directions | `scripts/verify-client-only.ps1` |
 | A-4 | Client compiles | `cargo check` (in `desktop/src-tauri`) |
 
@@ -158,30 +158,33 @@ or re-render on every poll — the event only fires on an actual transition.
 
 ## TEST 7 — Add to Steam *(ZC-004)*
 
-> **Close Steam completely first** (check the tray). Steam rewrites
-> `shortcuts.vdf` from memory when it exits, so Drop refuses to write while it
-> is running. That refusal is itself worth testing — see 7d.
+> Steam may be running. Drop closes it, writes, and starts it again — that is
+> the intended flow and is itself worth testing (7d).
 
 1. Install a game via Drop.
 2. Open the game's options → **Steam** tab.
 3. Confirm the panel lists your Steam account and the launcher, and shows the
    resolved target path under "Steam will run:".
 4. Click **Add to Steam**.
-5. Start Steam.
 
 **Expected.** The game appears in the Steam library as a non-Steam shortcut,
 under a **Drop** category.
 
-**7b — no duplicate.** Close Steam, click **Update shortcut**, reopen Steam.
-Exactly one entry.
+**7b — no duplicate.** Click **Update shortcut**. Exactly one entry.
 
 **7c — other shortcuts survive.** If you already had non-Steam shortcuts (this
 machine has "Cyberpunk 2077 (GOG)"), they must still be present and unchanged.
 
-**7d — refusal while Steam runs.** With Steam open, the panel shows a warning
-and **Add to Steam** is disabled.
+**7d — Steam is closed and restarted, not killed.** With Steam **running**,
+click **Add to Steam**. Steam should close cleanly and come back on its own, and
+the panel should say so. Confirm Steam did not crash-report on restart.
 
-**7e — genuine licences untouched.** If you own the same game on Steam for
+**7e — Steam refuses to close during a game.** Launch any game through Steam,
+then click **Add to Steam**. Drop must report *"Steam would not close…"* and
+must **not** write. Quit the game and retry — it should then work. This is the
+case where forcing would corrupt Steam's config, so a failure here is serious.
+
+**7f — genuine licences untouched.** If you own the same game on Steam for
 real, that entry is unaffected. (By construction: `shortcuts.vdf` holds only
 non-Steam shortcuts; real licences live in `steamapps/appmanifest_*.acf`, which
 Drop never opens.)
@@ -207,9 +210,34 @@ target must be the full `...\Graveyard Keeper.exe`, quoted.
 
 ## TEST 9 — Steam artwork *(ZC-005)*
 
-**Expected.** Grid/capsule, hero, logo and icon render after a Steam restart.
-Verify **both** paths: with a SteamGridDB API key configured, and with none
-(fallback to Drop's own images). The feature must work without a key.
+**9a — no API key (the important one).** With no SteamGridDB key saved (use
+**Forget** if one is stored), add a game to Steam.
+
+**Expected.** The library tile shows Drop's own cover art, not a grey box. The
+panel lists which slots were filled. **The feature must work without a key** —
+this is the path most members will be on.
+
+**9b — with a SteamGridDB key.** Get a free key from
+`steamgriddb.com/profile/preferences/api`, paste it into the panel, **Save**,
+then **Update shortcut** on a game.
+
+**Expected.** Proper Steam artwork: vertical capsule, wide capsule, hero banner,
+and where available a transparent logo and an icon.
+
+**9c — the key never comes back.** After saving, the field shows only *"A key is
+saved"* — the key itself is never returned to the UI. Confirm it is stored at
+`%APPDATA%\drop\zougcloud\steamgriddb.key` and **not** anywhere in `drop.db`.
+
+**9d — files land in the right place.** Check
+`<Steam>\userdata\<account>\config\grid\` for `<appid>.png`, `<appid>p.png`,
+`<appid>_hero.png`, `<appid>_logo.png`, `<appid>_icon.png`.
+
+**9e — no stale slot.** Add with no key (Drop art), then save a key and update.
+Each slot must have exactly **one** file — no `123p.jpg` left beside a
+`123p.png`, which Steam would render instead.
+
+**9f — removal cleans up.** **Remove from Steam**, then check the `grid` folder:
+that appid's files are gone, and other games' artwork is untouched.
 
 ---
 

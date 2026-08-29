@@ -28,7 +28,7 @@ git grep -n "ZOUGCLOUD("
 | ZC-002 | Game update state reaches the UI | `custom` | `4e0c1be2` |
 | ZC-003 | Windows launch-command parsing | `custom` | `0d513567` |
 | ZC-004 | Steam shortcut integration | `custom` | `415daa63`, `c412152f`, `21a753a4` |
-| ZC-005 | Steam artwork | *planned* | — |
+| ZC-005 | Steam artwork | `custom` | `3ea8b514`, `fed5ac6e` |
 | ZC-006 | Steam shortcut management | `custom` (in ZC-004) | `415daa63` |
 | — | Client-only guard (infrastructure) | `custom` | `469c7dbb` |
 | — | Build versioning and packaging | `custom` | `d97a0547`, `f9ae1a98`, `971c22d5` |
@@ -246,8 +246,14 @@ executable, getting the working directory right, and redoing it after a move.
 - Launch resolution reuses `ParsedCommand`, so ZC-003's handling of executables
   with spaces applies identically here.
 - Emulator launches are skipped: there is no single executable to point at.
-- Writes are refused while Steam is running. Steam rewrites `shortcuts.vdf`
-  from memory on exit, so a write made now would be silently discarded.
+- **Steam is closed and restarted around a write**, not refused. Steam rewrites
+  `shortcuts.vdf` from memory on exit and only scans the artwork folder at
+  startup, so editing either while it runs is pointless. Refusing left the
+  member to work out what to do; closing and restarting also makes the result
+  visible immediately. It is `steam.exe -shutdown` — Steam's own graceful exit,
+  never a kill — and it declines while a game is running, which is surfaced
+  ("quit the game, then try again") rather than forced. Steam is restarted even
+  on the failure path.
 - `shortcuts.vdf` holds **only** non-Steam shortcuts. A genuine licence lives in
   `steamapps/appmanifest_*.acf`, which this code never opens, so a real Steam
   copy of the same game cannot be touched.
@@ -296,13 +302,53 @@ Covered by `a_moved_game_keeps_its_app_id_and_playtime`. Manual TEST 11.
 
 ---
 
-## Planned
+## ZC-005 — Steam artwork
 
-### ZC-005 — Steam artwork
-Grid/capsule, hero, logo and icon for the shortcut, written to
-`userdata/<account>/config/grid/` (`steam_grid_dir` already exposes the path).
-SteamGridDB as an optional source behind a user-supplied API key (never
-committed, never hardcoded), with a fallback to Drop's own images — the `Game`
-model already carries `m_icon_object_id`, `m_banner_object_id`,
-`m_cover_object_id` and the library / carousel image ID lists. Must work with
-no key configured.
+**Problem solved.** A non-Steam shortcut with no artwork is a grey box with a
+filename. Members would have to find and crop five images per game by hand.
+
+**Files.**
+- `desktop/src-tauri/steam/src/artwork.rs` (new)
+- `desktop/src-tauri/src/steamgriddb.rs` (new)
+- `desktop/src-tauri/src/steam.rs`, `desktop/main/components/GameOptions/Steam.vue`
+
+**Why upstream is not enough.** Upstream has no Steam integration at all.
+
+**Client-only.** SteamGridDB is a third party; the fallback uses
+`api/v1/client/object/{id}`, an endpoint that already exists and that the
+library itself uses. No server change.
+
+**Design notes.**
+- Five slots, named after the shortcut's app id in
+  `userdata/<account>/config/grid/`. There is no index — the filename *is* the
+  association, which is why ZC-006 preserves the app id across a move.
+- The capsule stem (`123`) is a prefix of the portrait's (`123p`), so lookups
+  compare whole stems. Prefix matching would delete one while writing the other.
+- The extension comes from the image's magic bytes, and any existing file for
+  the slot is removed first whatever its extension: Steam dispatches on the
+  extension, so a JPEG written as `.png` renders blank and a stale `123p.jpg`
+  would beat a fresh `123p.png`.
+- Applied inside the same Steam-closed window as the shortcut, so one click
+  produces a complete entry.
+- Every artwork failure is swallowed and logged. Artwork is a nicety; losing it
+  must never fail the thing the member asked for.
+- Logo has no Drop equivalent (it is a transparent title treatment), so that
+  slot is left empty rather than filled with a cover that would sit wrongly over
+  the hero.
+
+**The API key.** No key ships with the client. A hardcoded one would be
+committed to a public AGPL repository, shared by every member, and revoked as
+soon as anyone noticed. The user's key lives at
+`%APPDATA%\drop\zougcloud\steamgriddb.key` — deliberately not in `drop.db`, to
+keep it out of the database blob and its backups, and to avoid adding a field to
+an upstream model that would need reconciling at every rebase. It is write-only
+across the IPC boundary: the frontend can set or clear it and learn *whether*
+one exists, never read it back.
+
+**Tests.** 7 unit tests in `artwork.rs` (stems, extension detection, the
+capsule/portrait collision, extension replacement, removal isolation).
+Manual TEST 9.
+
+**ZougCloud commits.** `3ea8b514` (crate), `fed5ac6e` (fetching + UI)
+
+**State.** `custom`
