@@ -13,10 +13,10 @@ pub enum SteamError {
     NotInstalled,
     NoUsers,
     UnknownUser(u32),
-    /// Steam rewrites shortcuts.vdf from memory when it exits, so anything we
-    /// write while it is running is silently lost. Refusing is the only way to
-    /// avoid telling the user we succeeded when we did not.
-    SteamRunning,
+    /// We asked Steam to shut down and it was still there when we gave up.
+    /// Steam refuses `-shutdown` while a game is running, which is the usual
+    /// cause. Writing anyway would be silently undone when it finally exits.
+    SteamWillNotClose,
     ShortcutsUnreadable(String),
     ShortcutsUnwritable(String),
     ExecutableMissing(String),
@@ -33,9 +33,9 @@ impl Display for SteamError {
                     .to_owned()
             }
             SteamError::UnknownUser(id) => format!("Unknown Steam account {id}"),
-            SteamError::SteamRunning => {
-                "Steam is running. Close Steam completely and try again -- Steam rewrites its \
-                 shortcuts file when it exits, which would undo this change."
+            SteamError::SteamWillNotClose => {
+                "Steam would not close. This usually means a game is still running through \
+                 Steam -- quit it, then try again."
                     .to_owned()
             }
             SteamError::ShortcutsUnreadable(e) => {

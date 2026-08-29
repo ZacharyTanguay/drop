@@ -69,6 +69,7 @@ mod remote;
 mod scheduler;
 mod settings;
 mod steam; // ZOUGCLOUD(ZC-004)
+mod steamgriddb; // ZOUGCLOUD(ZC-005)
 mod updates;
 
 use client::*;
@@ -85,7 +86,7 @@ use crate::scheduler::scheduler_task;
 // wraps and a glob would be ambiguous.
 use crate::steam::{
     steam_add_shortcut, steam_game_status, steam_grid_dir, steam_open_shortcut,
-    steam_remove_shortcut,
+    steam_remove_shortcut, steam_set_steamgriddb_key,
 };
 
 async fn setup(handle: AppHandle) -> AppState {
@@ -300,6 +301,7 @@ pub fn run() {
             steam_remove_shortcut,
             steam_open_shortcut,
             steam_grid_dir,
+            steam_set_steamgriddb_key,
             #[cfg(target_os = "linux")]
             ::process::compat::fetch_proton_paths,
             #[cfg(target_os = "linux")]

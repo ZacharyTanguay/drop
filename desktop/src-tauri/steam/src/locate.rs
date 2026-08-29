@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use log::{debug, warn};
 use serde::Serialize;
@@ -36,8 +39,9 @@ impl SteamUser {
 pub struct SteamInstall {
     pub path: PathBuf,
     pub users: Vec<SteamUser>,
-    /// Steam rewrites shortcuts.vdf from memory when it exits, so we report
-    /// this to the UI and refuse to write while it is true.
+    /// Steam rewrites shortcuts.vdf from memory when it exits, so writing while
+    /// this is true would be silently undone. Callers shut Steam down first and
+    /// restart it afterwards rather than refusing.
     pub running: bool,
 }
 
@@ -194,10 +198,57 @@ fn read_login_users(steam_path: &Path) -> Vec<(u32, String, bool)> {
         .collect()
 }
 
+#[cfg(target_os = "windows")]
+const STEAM_BINARY: &str = "steam.exe";
+#[cfg(not(target_os = "windows"))]
+const STEAM_BINARY: &str = "steam";
+
+pub fn steam_executable(install: &SteamInstall) -> PathBuf {
+    install.path.join(STEAM_BINARY)
+}
+
+/// Ask Steam to shut down cleanly.
+///
+/// `-shutdown` is Steam's own documented graceful exit: it flushes state,
+/// closes the client and, importantly, refuses to go while a game is still
+/// running. We never kill the process -- terminating Steam mid-write is exactly
+/// how its config gets corrupted, which is the thing this whole module is
+/// trying to avoid.
+pub fn request_steam_exit(install: &SteamInstall) -> Result<(), SteamError> {
+    let exe = steam_executable(install);
+    debug!("asking Steam to shut down via {}", exe.display());
+    std::process::Command::new(&exe).arg("-shutdown").spawn()?;
+    Ok(())
+}
+
+/// Wait for Steam to actually be gone. Returns false on timeout.
+///
+/// Steam does not exit instantly, and it will not exit at all while a game is
+/// running -- so the caller must treat a timeout as "tell the user", never as
+/// "write anyway".
+pub fn wait_for_steam_exit(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !is_steam_running() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    !is_steam_running()
+}
+
+/// Start Steam again after we are done editing its files.
+pub fn launch_steam(install: &SteamInstall) -> Result<(), SteamError> {
+    let exe = steam_executable(install);
+    debug!("restarting Steam from {}", exe.display());
+    std::process::Command::new(&exe).spawn()?;
+    Ok(())
+}
+
 /// Is Steam running right now?
 ///
 /// Anything we write to shortcuts.vdf while Steam is up is overwritten from
-/// memory when it exits, so every write path checks this first.
+/// memory when it exits, so every write path deals with this first.
 pub fn is_steam_running() -> bool {
     use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 
