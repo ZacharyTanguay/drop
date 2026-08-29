@@ -218,8 +218,24 @@ pub fn run() {
     #[cfg(desktop)]
     #[allow(unused_variables)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // when defining deep link schemes at runtime, you must also check `argv` here
+
+            // ZOUGCLOUD(ZC-001): upstream leaves this callback empty. Because closing
+            // the window only hides it to the tray, a second launch hands its argv to
+            // the running instance and exits — and with nothing done here, the hidden
+            // window never comes back. Users read that as "Drop refuses to open" and
+            // kill the process from the Task Manager. Resurface the existing window so
+            // the single-instance guarantee stays invisible to them.
+            if argv.iter().any(|arg| arg == "--minimize") {
+                // Autostart re-entry: honour the request to stay out of the way.
+                return;
+            }
+            if let Some(window) = app.get_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }));
     }
 
