@@ -75,6 +75,7 @@
 <script setup lang="ts">
 import type { Component } from "vue";
 import {
+  ArrowTopRightOnSquareIcon,
   RocketLaunchIcon,
   ServerIcon,
   TrashIcon,
@@ -82,6 +83,8 @@ import {
 } from "@heroicons/vue/20/solid";
 import Launch from "./GameOptions/Launch.vue";
 import Updates from "./GameOptions/Updates.vue";
+// ZOUGCLOUD(ZC-004)
+import Steam from "./GameOptions/Steam.vue";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowPathIcon } from "@heroicons/vue/24/solid";
 import type { GameVersion } from "~/types";
@@ -113,6 +116,12 @@ const tabs: Array<{ name: string; icon: Component; page: Component }> = [
     name: "Updates",
     icon: ArrowPathIcon,
     page: Updates,
+  },
+  // ZOUGCLOUD(ZC-004): optional Steam integration.
+  {
+    name: "Steam",
+    icon: ArrowTopRightOnSquareIcon,
+    page: Steam,
   },
   {
     name: "Storage",

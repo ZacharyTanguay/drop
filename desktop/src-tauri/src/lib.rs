@@ -68,6 +68,7 @@ mod process;
 mod remote;
 mod scheduler;
 mod settings;
+mod steam; // ZOUGCLOUD(ZC-004)
 mod updates;
 
 use client::*;
@@ -79,6 +80,13 @@ use remote::*;
 use settings::*;
 
 use crate::scheduler::scheduler_task;
+// ZOUGCLOUD(ZC-004): spelled out rather than glob-imported like the modules
+// above, because `steam` is also the name of the workspace crate this module
+// wraps and a glob would be ambiguous.
+use crate::steam::{
+    steam_add_shortcut, steam_game_status, steam_grid_dir, steam_open_shortcut,
+    steam_remove_shortcut,
+};
 
 async fn setup(handle: AppHandle) -> AppState {
     let logfile = FileAppender::builder()
@@ -286,6 +294,12 @@ pub fn run() {
             open_process_logs,
             get_launch_options,
             get_process_handlers,
+            // ZOUGCLOUD(ZC-004/005/006): optional Steam integration
+            steam_game_status,
+            steam_add_shortcut,
+            steam_remove_shortcut,
+            steam_open_shortcut,
+            steam_grid_dir,
             #[cfg(target_os = "linux")]
             ::process::compat::fetch_proton_paths,
             #[cfg(target_os = "linux")]
