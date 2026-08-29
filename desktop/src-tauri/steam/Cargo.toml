@@ -1,0 +1,21 @@
+# ZOUGCLOUD(ZC-004): Steam integration lives in its own crate rather than in a
+# module of drop-app. Entirely new files have no conflict surface at all when we
+# rebase onto a new upstream release; the only contact points with upstream code
+# are one line in the workspace manifest and one in the invoke handler.
+[package]
+name = "steam"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.42"
+keyvalues-parser = "0.2.3"
+log = "0.4.28"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_with = "3.15.0"
+steam_shortcuts_util = "1.1.8"
+steamlocate = "2.1.1"
+sysinfo = "0.36.1"
+
+[dev-dependencies]
+tempfile = "3.19.1"
