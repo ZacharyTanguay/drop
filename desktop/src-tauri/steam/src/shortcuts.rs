@@ -76,6 +76,20 @@ pub fn run_game_id(app_id: u32) -> u64 {
     (u64::from(app_id) << 32) | 0x0200_0000
 }
 
+/// ZOUGCLOUD(ZC-009): URL that opens Steam **on** a shortcut's library page.
+///
+/// Deliberately `nav/games/details` and not `rungameid`: the latter would start
+/// the game, and "Open in Steam" must not launch anything. The library keys
+/// non-Steam entries on the 32-bit shortcut id, which is why this takes
+/// `app_id` rather than the 64-bit `run_game_id` used for launching.
+///
+/// Steam's handling of this URI has been unreliable across client versions. The
+/// failure mode is benign — Steam still comes to the foreground on the library
+/// rather than doing nothing — so there is no fallback to detect or code.
+pub fn library_url(app_id: u32) -> String {
+    format!("steam://nav/games/details/{app_id}")
+}
+
 fn normalise_exe(exe: &str) -> String {
     exe.trim_matches('"').replace('/', "\\").to_ascii_lowercase()
 }
@@ -373,6 +387,50 @@ mod tests {
     #[test]
     fn run_game_id_has_the_shortcut_marker() {
         assert_eq!(run_game_id(0x8000_0001), 0x8000_0001_0200_0000);
+    }
+
+    // ZOUGCLOUD(ZC-009)
+    #[test]
+    fn the_library_url_navigates_and_never_launches() {
+        let url = library_url(3_617_084_025);
+
+        assert_eq!(url, "steam://nav/games/details/3617084025");
+        // The whole point of "Open in Steam" is that it does not start the
+        // game. rungameid would.
+        assert!(!url.contains("rungameid"), "{url}");
+        // The library keys non-Steam entries on the 32-bit id, not the 64-bit
+        // one used for launching.
+        assert!(
+            !url.contains(&run_game_id(3_617_084_025).to_string()),
+            "{url}"
+        );
+    }
+
+    // ZOUGCLOUD(ZC-009)
+    #[test]
+    fn opening_a_shortcut_does_not_touch_the_shortcuts_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let u = user(dir.path());
+        let exe = make_exe(dir.path(), "Game.exe");
+
+        let record = upsert_shortcut(&u, &request(&exe, "Game")).expect("add");
+        let before = std::fs::read(u.shortcuts_path()).expect("read");
+        let artwork_before = crate::artwork::installed_artwork(&u, record.app_id);
+
+        // "Open in Steam" is nothing but this string; it has no write path at
+        // all, which is what preserves the AppID, artwork and Steam playtime.
+        let _ = library_url(record.app_id);
+
+        assert_eq!(std::fs::read(u.shortcuts_path()).expect("read"), before);
+        assert_eq!(
+            crate::artwork::installed_artwork(&u, record.app_id),
+            artwork_before
+        );
+        assert_eq!(
+            list_shortcuts(&u).expect("list")[0].app_id,
+            record.app_id,
+            "the AppID must survive untouched"
+        );
     }
 
     #[test]

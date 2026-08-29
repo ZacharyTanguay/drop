@@ -18,7 +18,7 @@ use serde_with::SerializeDisplay;
 use steam::{
     ArtworkKind, ShortcutRecord, ShortcutRequest, SteamError, SteamInstall, SteamUser,
     find_shortcut, installed_artwork, launch_steam, locate_steam, remove_artwork, remove_shortcut,
-    request_steam_exit, run_game_id, upsert_shortcut, wait_for_steam_exit, write_artwork,
+    library_url, request_steam_exit, upsert_shortcut, wait_for_steam_exit, write_artwork,
 };
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
@@ -362,11 +362,14 @@ pub fn steam_remove_shortcut(
     Ok(steam_restarted)
 }
 
-/// Open the game's page in Steam. Safe while Steam is running: it only follows
-/// a URL and never touches Steam's files.
+/// Open the game's page in Steam.
+///
+/// Read-only by construction: it follows a URL and never opens shortcuts.vdf,
+/// so the shortcut's AppID, artwork, Steam playtime and controller settings are
+/// all untouched. Safe while Steam is running.
 #[tauri::command]
 pub fn steam_open_shortcut(app_id: u32, app_handle: AppHandle) -> Result<(), SteamCommandError> {
-    let url = format!("steam://nav/games/details/{}", run_game_id(app_id));
+    let url = library_url(app_id);
     app_handle
         .opener()
         .open_url(url, None::<&str>)

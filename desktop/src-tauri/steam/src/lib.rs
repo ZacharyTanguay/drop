@@ -26,6 +26,6 @@ pub use locate::{
     steam_executable, wait_for_steam_exit,
 };
 pub use shortcuts::{
-    DROP_TAG, ShortcutRecord, ShortcutRequest, app_id_for, find_shortcut, list_shortcuts,
+    DROP_TAG, ShortcutRecord, ShortcutRequest, app_id_for, find_shortcut, library_url, list_shortcuts,
     remove_shortcut, run_game_id, steam_quote, upsert_shortcut,
 };

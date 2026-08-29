@@ -45,16 +45,22 @@
             class="absolute mt-1 inline-flex items-center gap-x-1 text-xs text-zinc-400"
           >
             Up to date <CheckCircleIcon class="size-3 text-green-600" />
+            <!-- ZOUGCLOUD(ZC-008) -->
+            <ZougcloudPlaytime :playtime="playtime" />
           </div>
           <div
             v-else-if="status.update_available"
             class="absolute mt-1 inline-flex items-center gap-x-1 text-xs text-zinc-400"
           >
             Update available <ArrowDownTrayIcon class="size-3 text-blue-600" />
+            <!-- ZOUGCLOUD(ZC-008) -->
+            <ZougcloudPlaytime :playtime="playtime" />
           </div>
         </div>
 
-        <div class="mt-8 flex flex-row gap-x-4 items-stretch">
+        <!-- ZOUGCLOUD(ZC-009): flex-wrap + gap-y so a fourth button wraps on narrow
+             windows instead of overflowing the row. -->
+        <div class="mt-8 flex flex-row flex-wrap gap-x-4 gap-y-3 items-stretch">
           <!-- Do not add scale animations to this: https://stackoverflow.com/a/35683068 -->
           <GameStatusButton
             @install="() => installFlow()"
@@ -72,6 +78,17 @@
             @click="() => installFlow()"
           >
             Update <ArrowDownTrayIcon class="size-5" />
+          </button>
+          <!-- ZOUGCLOUD(ZC-009): only shown when a ZougCloud shortcut really
+               exists in Steam's own shortcuts file, re-read on every refresh so
+               deleting it from inside Steam makes this disappear. -->
+          <button
+            v-if="steamAppId !== null"
+            @click="() => openInSteam()"
+            class="transition-transform duration-300 hover:scale-105 active:scale-95 inline-flex gap-x-2 items-center rounded-md bg-zinc-800/50 px-6 font-semibold text-white shadow-xl backdrop-blur-sm hover:bg-zinc-800/80 uppercase font-display"
+          >
+            <ArrowTopRightOnSquareIcon class="size-5" aria-hidden="true" />
+            Open in Steam
           </button>
           <NuxtLink
             class="transition-transform duration-300 hover:scale-105 active:scale-95 inline-flex items-center rounded-md bg-zinc-800/50 px-6 font-semibold text-white shadow-xl backdrop-blur-sm hover:bg-zinc-800/80 uppercase font-display"
@@ -661,6 +678,7 @@ import {
   ArrowsPointingOutIcon,
   PhotoIcon,
   PlayIcon,
+  ArrowTopRightOnSquareIcon,
   InformationCircleIcon,
 } from "@heroicons/vue/20/solid";
 import { BuildingStorefrontIcon } from "@heroicons/vue/24/outline";
@@ -681,6 +699,13 @@ const router = useRouter();
 const id = route.params.id.toString();
 
 const { game, status, version } = await useGame(id);
+
+// ZOUGCLOUD(ZC-008/ZC-009): local playtime and the Steam shortcut state. Kept
+// in a composable so this patch stays one line in an upstream file.
+const { playtime, steamAppId, openInSteam } = await useZougcloudGameState(
+  id,
+  game.mName,
+);
 
 const bannerUrl = await useObject(game.mBannerObjectId);
 
