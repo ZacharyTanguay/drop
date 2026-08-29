@@ -18,6 +18,7 @@ use dynfmt::Format;
 use dynfmt::SimpleCurlyFormat;
 use games::{library::push_game_update, state::GameStatusManager};
 use log::{debug, info, warn};
+use playtime::{PLAYTIME, SessionOwner}; // ZOUGCLOUD(ZC-008)
 use serde::Serialize;
 use shared_child::SharedChild;
 use tauri::{AppHandle, Emitter as _};
@@ -154,6 +155,15 @@ impl ProcessManager<'_> {
         }
 
         debug!("process for {:?} exited with {:?}", &game_id, result);
+
+        // ZOUGCLOUD(ZC-008): close the session we opened at spawn. Only a
+        // session owned by `Drop` is closed here, so a game the watcher is
+        // following is left alone.
+        if PLAYTIME.is_ready() {
+            PLAYTIME
+                .lock()
+                .end_session(&game_id, SessionOwner::Drop, playtime::now());
+        }
 
         let process = match self.processes.remove(&game_id) {
             Some(process) => process,
@@ -563,6 +573,15 @@ impl ProcessManager<'_> {
         process_handler.modify_command(&mut command);
 
         let child = command.spawn()?;
+
+        // ZOUGCLOUD(ZC-008): the playtime session starts *here*, after a
+        // successful spawn -- not when the user clicks Play. A launch that
+        // fails (missing executable, bad launch command) must credit nothing.
+        if PLAYTIME.is_ready() {
+            PLAYTIME
+                .lock()
+                .begin_session(&meta.id, SessionOwner::Drop, playtime::now());
+        }
 
         let launch_process_handle = Arc::new(SharedChild::new(child)?);
 

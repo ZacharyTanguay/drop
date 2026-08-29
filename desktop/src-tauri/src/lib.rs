@@ -64,6 +64,7 @@ mod collections;
 mod download_manager;
 mod downloads;
 mod games;
+mod playtime; // ZOUGCLOUD(ZC-008)
 mod process;
 mod remote;
 mod scheduler;
@@ -84,6 +85,7 @@ use crate::scheduler::scheduler_task;
 // ZOUGCLOUD(ZC-004): spelled out rather than glob-imported like the modules
 // above, because `steam` is also the name of the workspace crate this module
 // wraps and a glob would be ambiguous.
+use crate::playtime::{fetch_playtime, playtime_watcher, playtime_path};
 use crate::steam::{
     steam_add_shortcut, steam_game_status, steam_grid_dir, steam_open_shortcut,
     steam_remove_shortcut, steam_set_steamgriddb_key,
@@ -119,6 +121,10 @@ async fn setup(handle: AppHandle) -> AppState {
         .expect("Failed to build config");
 
     log4rs::init_config(config).expect("Failed to initialise log4rs");
+
+    // ZOUGCLOUD(ZC-008): before the process manager, so a launch can never
+    // reach begin_session with an uninitialised tracker.
+    ::playtime::PlaytimeWrapper::init(playtime_path());
 
     ProcessManagerWrapper::init(handle.clone());
     DownloadManagerWrapper::init(handle.clone());
@@ -295,6 +301,8 @@ pub fn run() {
             open_process_logs,
             get_launch_options,
             get_process_handlers,
+            // ZOUGCLOUD(ZC-008)
+            fetch_playtime,
             // ZOUGCLOUD(ZC-004/005/006): optional Steam integration
             steam_game_status,
             steam_add_shortcut,
@@ -469,6 +477,11 @@ pub fn run() {
                 }
 
                 tokio::spawn(async move { scheduler_task().await });
+                // ZOUGCLOUD(ZC-008): notices games started outside Drop.
+                {
+                    let watcher_handle = app.handle().clone();
+                    tokio::spawn(async move { playtime_watcher(watcher_handle).await });
+                }
             });
 
             Ok(())

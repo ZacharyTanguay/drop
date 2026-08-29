@@ -12,6 +12,7 @@ games = { path = "../games", version = "0.1.0" }
 keyvalues-parser = "0.2.3"
 log = "0.4.28"
 page_size = "0.6.0"
+playtime = { path = "../playtime" } # ZOUGCLOUD(ZC-008)
 serde = "1.0.228"
 serde_with = "3.15.0"
 shared_child = "1.1.1"
