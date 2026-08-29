@@ -4614,6 +4614,7 @@ dependencies = [
  "shell-words",
  "tauri",
  "tauri-plugin-opener",
+ "tempfile",
  "utils",
 ]
 

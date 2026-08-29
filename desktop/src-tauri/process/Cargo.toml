@@ -19,3 +19,7 @@ shell-words = "1.1.1"
 tauri = "*"
 tauri-plugin-opener = "*"
 utils = { path = "../utils", version = "0.1.0" }
+
+# ZOUGCLOUD(ZC-003): filesystem fixtures for the Windows launch-command tests.
+[dev-dependencies]
+tempfile = "3.19.1"

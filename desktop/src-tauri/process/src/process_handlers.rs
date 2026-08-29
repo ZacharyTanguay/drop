@@ -69,6 +69,14 @@ fn windows_launch_command(
 ) -> Result<String, ProcessError> {
     let mut parsed = ParsedCommand::parse(launch_command)?;
 
+    // ZOUGCLOUD(ZC-003): recover an unquoted executable whose name contains
+    // spaces before the extension sniffing below runs. Without this,
+    // `Graveyard Keeper.exe` reads as the command `Graveyard` with the argument
+    // `Keeper.exe`; `Graveyard` has no extension, so it falls through to the
+    // cmd.exe strategy and the launch dies with
+    // "'Graveyard' is not recognized as an internal or external command".
+    parsed.coalesce_unquoted_command(Path::new(current_dir));
+
     let strategy = strategy.unwrap_or_else(|| {
         let extension = Path::new(&parsed.command)
             .extension()
