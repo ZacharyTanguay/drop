@@ -1,0 +1,19 @@
+# ZOUGCLOUD(ZC-011/ZC-013): the access model in its own crate.
+#
+# Deliberately knows nothing about GitHub, HTTP or Tauri. It is the single
+# place that decides whether a member may have a game, so the library filter
+# and the Store proxy guard cannot drift apart -- and so the rule can be tested
+# exhaustively without a network.
+[package]
+name = "access"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.42"
+log = "0.4.28"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3.19.1"

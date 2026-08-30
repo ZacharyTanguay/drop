@@ -8,6 +8,7 @@ edition = "2024"
 [workspace]
 resolver = "3"
 members = [
+  "access",
   "client",
   "cloud_saves",
   "database",
