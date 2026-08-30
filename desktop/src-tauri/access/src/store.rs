@@ -7,7 +7,7 @@ use std::{
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
 
-use crate::model::AccessManifest;
+use crate::model::{AccessManifest, SCHEMA_VERSION};
 
 /// The cached manifest, with enough context to decide whether a refetch is
 /// needed and to reason about staleness.
@@ -78,14 +78,28 @@ impl ManifestCache {
 
     /// Replace the cache after a successful fetch.
     ///
-    /// Refuses to go backwards: an older revision arriving out of order (a
-    /// stale CDN copy, say) must not undo a newer one already applied.
+    /// Only a manifest that is **valid and not older** replaces what is held.
+    /// Everything else leaves the last known-good copy in force, because the
+    /// alternative — dropping to an empty policy — would make a member's whole
+    /// library vanish because a remote had a bad day.
     pub fn store(
         &mut self,
         manifest: AccessManifest,
         etag: Option<String>,
         now: i64,
     ) -> std::io::Result<bool> {
+        // A manifest from a future schema cannot be interpreted safely: fields
+        // this build ignores might be the ones restricting access. Keep what we
+        // have rather than applying half of it.
+        if manifest.schema_version > SCHEMA_VERSION {
+            warn!(
+                "ignoring access manifest with schema v{} (this build understands v{SCHEMA_VERSION}); \
+                 keeping the cached copy",
+                manifest.schema_version
+            );
+            return Ok(false);
+        }
+
         if let Some(current) = &self.cached
             && manifest.revision < current.revision
         {
@@ -139,6 +153,94 @@ impl ManifestCache {
             file.sync_all()?;
         }
         fs::rename(&temp, &self.path)
+    }
+}
+
+/// What one poll of the remote produced.
+///
+/// Kept separate from any HTTP client so the decision logic below can be
+/// tested exhaustively without a network — these are exactly the cases that
+/// decide whether a member keeps their library during an outage.
+#[derive(Debug)]
+pub enum ManifestResponse {
+    /// The remote confirmed our ETag is current (HTTP 304).
+    NotModified,
+    /// A body arrived. It may still be unparseable.
+    Body {
+        text: String,
+        etag: Option<String>,
+    },
+    /// No usable answer: network error, timeout, non-2xx.
+    Unavailable,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ApplyOutcome {
+    /// A newer valid manifest was applied.
+    Updated { revision: u64 },
+    /// The remote confirmed nothing changed.
+    Unchanged,
+    /// The response was unusable; the last known-good manifest still applies.
+    RetainedCache,
+    /// Nothing usable and nothing cached. Members are denied until a manifest
+    /// arrives — free and all cannot be assumed without an authoritative copy.
+    NoPolicy,
+}
+
+/// Fold one poll result into the cache.
+///
+/// The rule that matters: **a remote failure never erases a valid cached
+/// policy.** Only a valid, non-older manifest replaces what is held. A member
+/// whose library worked yesterday must not lose it because GitHub had an
+/// outage or served something malformed.
+pub fn apply_response(
+    cache: &mut ManifestCache,
+    response: ManifestResponse,
+    now: i64,
+) -> ApplyOutcome {
+    let had_cache = cache.manifest().is_some();
+
+    match response {
+        ManifestResponse::NotModified => {
+            cache.touch(now);
+            if had_cache {
+                ApplyOutcome::Unchanged
+            } else {
+                // A 304 with nothing cached should not happen (we would not
+                // have sent If-None-Match), but it must not be read as "empty".
+                ApplyOutcome::NoPolicy
+            }
+        }
+
+        ManifestResponse::Body { text, etag } => {
+            match serde_json::from_str::<AccessManifest>(&text) {
+                Ok(manifest) => match cache.store(manifest, etag, now) {
+                    Ok(true) => ApplyOutcome::Updated {
+                        revision: cache.revision().unwrap_or(0),
+                    },
+                    // Rejected as older or from an unsupported schema.
+                    Ok(false) => retained_or_none(had_cache),
+                    Err(e) => {
+                        error!("could not persist the access manifest: {e}");
+                        retained_or_none(had_cache)
+                    }
+                },
+                Err(e) => {
+                    warn!("remote access manifest is malformed, keeping the cached copy: {e}");
+                    retained_or_none(had_cache)
+                }
+            }
+        }
+
+        ManifestResponse::Unavailable => retained_or_none(had_cache),
+    }
+}
+
+fn retained_or_none(had_cache: bool) -> ApplyOutcome {
+    if had_cache {
+        ApplyOutcome::RetainedCache
+    } else {
+        ApplyOutcome::NoPolicy
     }
 }
 
@@ -240,5 +342,229 @@ mod tests {
         let cache = ManifestCache::load(path);
         // The failure direction that matters: nothing is granted.
         assert!(cache.manifest().is_none());
+    }
+}
+
+// ZOUGCLOUD(ZC-011): the last-known-good contract.
+//
+// The distinction that matters, and that these tests pin down:
+//   - never fetched successfully  -> fail closed
+//   - fetched before, remote now unavailable -> KEEP APPLYING the cached copy
+//
+// Collapsing the second case into the first would make a member's whole
+// library disappear during a GitHub outage.
+#[cfg(test)]
+mod last_known_good {
+    use super::*;
+    use crate::model::{AccessMode, Viewer};
+
+    fn body(revision: u64, mode: &str) -> String {
+        format!(
+            r#"{{"schemaVersion":1,"revision":{revision},
+               "games":{{"g":{{"accessMode":"{mode}"}}}},"users":{{}}}}"#
+        )
+    }
+
+    fn cache(dir: &tempfile::TempDir) -> ManifestCache {
+        ManifestCache::load(dir.path().join("visibility.json"))
+    }
+
+    fn seed(c: &mut ManifestCache, revision: u64) {
+        let outcome = apply_response(
+            c,
+            ManifestResponse::Body {
+                text: body(revision, "free"),
+                etag: Some(format!("etag-{revision}")),
+            },
+            100,
+        );
+        assert_eq!(outcome, ApplyOutcome::Updated { revision });
+    }
+
+    #[test]
+    fn first_launch_with_no_cache_and_no_remote_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+
+        assert_eq!(
+            apply_response(&mut c, ManifestResponse::Unavailable, 1),
+            ApplyOutcome::NoPolicy
+        );
+        assert!(c.manifest().is_none());
+    }
+
+    #[test]
+    fn a_cached_manifest_survives_the_remote_going_away() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        seed(&mut c, 42);
+
+        assert_eq!(
+            apply_response(&mut c, ManifestResponse::Unavailable, 200),
+            ApplyOutcome::RetainedCache
+        );
+        assert_eq!(c.revision(), Some(42), "revision 42 must keep applying");
+        assert!(c.manifest().expect("data").games.contains_key("g"));
+    }
+
+    #[test]
+    fn a_304_keeps_the_cached_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        seed(&mut c, 42);
+
+        assert_eq!(
+            apply_response(&mut c, ManifestResponse::NotModified, 300),
+            ApplyOutcome::Unchanged
+        );
+        assert_eq!(c.revision(), Some(42));
+        assert_eq!(c.fetched_at(), Some(300), "the poll timestamp advances");
+    }
+
+    #[test]
+    fn a_malformed_response_never_overwrites_a_valid_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        seed(&mut c, 42);
+
+        let outcome = apply_response(
+            &mut c,
+            ManifestResponse::Body {
+                text: "<html>502 Bad Gateway</html>".to_owned(),
+                etag: Some("garbage".to_owned()),
+            },
+            400,
+        );
+
+        assert_eq!(outcome, ApplyOutcome::RetainedCache);
+        assert_eq!(c.revision(), Some(42));
+        assert_eq!(c.etag(), Some("etag-42"), "the good ETag is kept too");
+    }
+
+    #[test]
+    fn a_manifest_from_a_newer_schema_is_refused_and_the_cache_kept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        seed(&mut c, 42);
+
+        let outcome = apply_response(
+            &mut c,
+            ManifestResponse::Body {
+                text: r#"{"schemaVersion":99,"revision":43,"games":{},"users":{}}"#.to_owned(),
+                etag: None,
+            },
+            500,
+        );
+
+        // Applying only the parts we understand could drop the very fields
+        // that restrict access.
+        assert_eq!(outcome, ApplyOutcome::RetainedCache);
+        assert_eq!(c.revision(), Some(42));
+    }
+
+    #[test]
+    fn a_newer_valid_revision_replaces_the_cache() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        seed(&mut c, 42);
+
+        let outcome = apply_response(
+            &mut c,
+            ManifestResponse::Body {
+                text: body(43, "gated"),
+                etag: Some("etag-43".to_owned()),
+            },
+            600,
+        );
+
+        assert_eq!(outcome, ApplyOutcome::Updated { revision: 43 });
+        assert_eq!(c.revision(), Some(43));
+        assert_eq!(c.etag(), Some("etag-43"));
+        assert_eq!(
+            c.manifest().expect("data").games["g"].access_mode,
+            Some(AccessMode::Gated),
+            "the new policy is in force"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_local_cache_with_no_remote_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("visibility.json");
+        fs::write(&path, b"{ truncated").expect("write");
+
+        let mut c = ManifestCache::load(path);
+        assert_eq!(
+            apply_response(&mut c, ManifestResponse::Unavailable, 1),
+            ApplyOutcome::NoPolicy
+        );
+        assert!(c.manifest().is_none());
+    }
+
+    #[test]
+    fn a_corrupt_local_cache_recovers_from_the_next_good_fetch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("visibility.json");
+        fs::write(&path, b"{ truncated").expect("write");
+
+        let mut c = ManifestCache::load(path);
+        // No cached revision to compare against, so any valid manifest applies.
+        assert_eq!(
+            apply_response(
+                &mut c,
+                ManifestResponse::Body {
+                    text: body(7, "free"),
+                    etag: None
+                },
+                10
+            ),
+            ApplyOutcome::Updated { revision: 7 }
+        );
+    }
+
+    #[test]
+    fn the_admin_is_unaffected_by_manifest_availability() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+        apply_response(&mut c, ManifestResponse::Unavailable, 1);
+
+        let admin = Viewer {
+            user_id: "a".to_owned(),
+            username: crate::ADMIN_USERNAME.to_owned(),
+        };
+        // No manifest at all, and the admin still sees everything.
+        let empty = AccessManifest::default();
+        assert!(crate::is_game_accessible(&empty, &admin, "anything"));
+    }
+
+    #[test]
+    fn an_unknown_member_gets_free_and_all_but_not_gated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut c = cache(&dir);
+
+        let text = r#"{"schemaVersion":1,"revision":1,"games":{
+            "free-game":{"accessMode":"free"},
+            "all-game":{"accessMode":"all"},
+            "gated-game":{"accessMode":"gated"}},"users":{}}"#;
+        apply_response(
+            &mut c,
+            ManifestResponse::Body {
+                text: text.to_owned(),
+                etag: None,
+            },
+            1,
+        );
+
+        let stranger = Viewer {
+            user_id: "never-seen-before".to_owned(),
+            username: "newcomer".to_owned(),
+        };
+        let m = c.manifest().expect("data");
+
+        assert!(crate::is_game_accessible(m, &stranger, "free-game"));
+        assert!(crate::is_game_accessible(m, &stranger, "all-game"));
+        assert!(!crate::is_game_accessible(m, &stranger, "gated-game"));
+        // And a game with no policy at all stays denied.
+        assert!(!crate::is_game_accessible(m, &stranger, "unlisted"));
     }
 }
