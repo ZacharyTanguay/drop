@@ -33,7 +33,10 @@ git grep -n "ZOUGCLOUD("
 | ZC-007 | GOG Galaxy integration | **`abandoned`** | — |
 | ZC-008 | Local playtime tracking | `custom` | `9a63e2f3`, `3bcac577` |
 | ZC-009 | Open in Steam on game pages | `custom` | `700efb32` |
-| ZC-010 | Steam shortcut icon | **not created** — see note below | — |
+| ZC-010 | Managed Tailscale | *in progress* | — |
+| ZC-011 | Client-side game access | `custom` | `a283ae7c`, `7631a69c`, `3faf68bb`, `384bd3ed`, `357e1cd8` |
+| ZC-012 | Global error recovery | `custom` | `ff625cbf`, `104eed62` |
+| ZC-013 | Access modes, pricing, interests | *partial* | `a283ae7c`, `384bd3ed` |
 | — | Client-only guard (infrastructure) | `custom` | `469c7dbb` |
 | — | Build versioning and packaging | `custom` | `d97a0547`, `f9ae1a98`, `971c22d5` |
 
@@ -501,3 +504,168 @@ up the game's own icon natively.
 **No ZougCloud patch is required.** Do not add icon extraction, local `.ico`
 generation or an icon repair path — they would all be solving a configuration
 mistake in code.
+
+---
+
+## ZC-011 — Client-side game access
+
+> **This is UX steering, not authorisation.** The decision runs entirely in the
+> client. Anyone technical can bypass it by using the stock Drop client or
+> calling the server API directly. It exists to shape what non-technical
+> members see. Drop Server is deliberately unchanged.
+
+**Files.** `desktop/src-tauri/access/` (new crate),
+`desktop/src-tauri/src/access_provider.rs` (new),
+`desktop/src-tauri/client/src/user.rs` (two getters), `src/lib.rs` (wiring).
+
+### The model
+
+```
+game.accessMode  : free | gated
+user.accessMode  : custom | all
+```
+
+An earlier draft put `all` on the *game*. That was wrong: "everyone gets
+everything" is a property of a **member**, and the two answer different
+questions. Corrected at schemaVersion 2 while the live manifest was still
+empty — the last moment it was free to do.
+
+Precedence, and the ordering matters:
+
+1. the admin bypasses everything, **before** the manifest is consulted, so a
+   missing or unfetched manifest can never lock them out of their own client;
+2. a member whose mode is `all` gets every game, **before** the game is looked
+   up — that is what makes "All games" cover games not yet in the manifest, so
+   the admin need not revisit every all-member on each import;
+3. `free` needs no grant;
+4. `gated` needs an explicit grant;
+5. anything else fails closed.
+
+Both defaults lean restrictive: a member absent from the manifest is `custom`,
+and an `accessMode` this build cannot read falls back to `custom`. Reading
+either the other way would hand the catalogue to anyone who signs in.
+
+### Identifiers
+
+Games and members are keyed on **Drop UUIDs** — `User.id` is
+`@default(uuid())` in the server schema. Never on username or title: those are
+guessable and mutable.
+
+### Prices
+
+Integer minor units (`1299` = $12.99). Never floats. `price: null` means "no
+price configured" and is **not** the same as free — a gated game can be
+priceless and still need a grant.
+
+### The last-known-good contract
+
+| Situation | Result |
+|---|---|
+| Never fetched successfully | Deny — `free`/`all` cannot be assumed without an authoritative copy |
+| Fetched before, remote now unavailable | **Keep applying the cached manifest** |
+| 304 Not Modified | Keep the cached manifest |
+| New response malformed | Reject it, keep the cache |
+| New response from a newer schemaVersion | Reject it, keep the cache |
+| Newer valid revision | Atomic replacement |
+
+A GitHub outage must never erase a valid policy: a member whose library worked
+yesterday must not lose it because a remote had a bad day. Equally, no failure
+path may widen access.
+
+### The provider
+
+Members read `raw.githubusercontent.com/ZacharyTanguay/zougcloud-games-access`
+with **no credential** — which is why the repository is public and holds only
+opaque UUIDs. Conditional requests with ETag / If-None-Match.
+
+Polling every 5 minutes matches the `Cache-Control: max-age=300` the raw
+endpoint is currently observed to send; polling faster would only re-read a
+cached copy. That is an observation, not a protocol assumption — correctness
+rests on the conditional request.
+
+**Propagation latency, measured.** An admin write lands on the GitHub API
+immediately, but the raw CDN serves the old copy for up to 5 minutes, and a
+member then waits up to one poll interval. Worst case is therefore about
+**10 minutes** for an access change to reach a member. Verified empirically:
+after a write the API returned revision 2 while raw still served revision 1.
+
+### Admin write
+
+GitHub Contents API with a fine-grained PAT that lives only in the admin's
+Windows Credential Manager under `ZougCloud/GitHubToken`. `keyring`'s
+`new_with_target` is used because on Windows the target name is a credential's
+sole identifier, so this reads exactly what `cmdkey` stored.
+
+The token is passed straight into a request header. It is never logged, never
+placed in an error message, and never written to disk. It is not in the
+repository, the installer, or BUILD-INFO.
+
+**Tests.** 44 unit tests in the `access` crate plus 4 in the provider. An
+`#[ignore]`d end-to-end test hits the real repository; it is non-destructive by
+construction, incrementing `revision` and carrying every policy and grant
+through untouched.
+
+**State.** `custom`
+
+---
+
+## ZC-012 — Global error recovery
+
+**Problem solved.** Drop could land on a black screen showing
+`asset not found: main/id/me`, escapable only with mouse-Back then F5.
+
+Two independent defects, both upstream:
+
+1. `HeaderUserWidget.vue` linked to `/id/me` and the Desktop has **no
+   `pages/id/` route at all**. In a Tauri SPA an unknown route becomes an asset
+   request. Pointed at `/settings/account`, which exists; no route was invented
+   to paper over it.
+2. `error.vue`'s only way out was `<a href="/store">` — a raw href that ignores
+   the `/main` baseURL and produces another asset error. It also rendered inside
+   `NuxtLayout default`, which mounts the header, which awaits the user object
+   and a Tauri command — so an error caused by bad app state risked failing the
+   error page too.
+
+The new page has no layout and no data dependencies, and recovers through
+`clearError({ redirect })`, which drops Nuxt's error state *before* routing.
+Retry is withheld for a missing route: retrying one would fail identically and
+walk the user into the loop the page exists to prevent.
+
+Classification is a pure, tested function preferring structured signals (status
+code, connection hint) over message text; text is consulted only for the Tauri
+asset case, which carries no status code.
+
+**Tests.** 8 frontend tests (vitest, added — the Desktop had no frontend test
+infrastructure).
+
+**State.** `custom` — both defects exist upstream and are PR candidates.
+
+---
+
+## Tailscale external identity — validated
+
+**External Machine Sharing + Tailscale Serve identity: ✅ EMPIRICALLY
+VALIDATED.**
+
+Test account: `zacktanguay2@gmail.com` — a distinct Tailscale account, on its
+own tailnet, which accepted the share of `zougcloud-games` and opened a Serve
+endpoint.
+
+Result: Serve returned **that account's own** `Tailscale-User-Login` and
+`Tailscale-User-Name`, not the sharer's.
+
+A negative control was taken first: reaching the same backend directly over
+loopback returned `(absent)` for both headers. So the headers demonstrably come
+from Serve, and a client cannot forge them by bypassing it — which is exactly
+why the backend must listen on localhost only.
+
+Two constraints discovered during the test, which the interest service design
+must respect:
+
+- the service must be reachable on **443**; the tailnet ACL grants
+  `autogroup:shared` only `tcp:443` on `zougcloud-games`, and an earlier attempt
+  on 8443 failed for that reason;
+- the admin identity for the service is `zacktanguay@gmail.com`, which is
+  distinct from the Drop username `zacktanguay` that drives Desktop admin UX.
+
+The Drop-JWT alternative is not needed and must not be reintroduced.
