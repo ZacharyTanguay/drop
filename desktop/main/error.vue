@@ -1,91 +1,119 @@
+<!--
+  ZOUGCLOUD(ZC-012): recoverable error page.
+
+  Upstream's version had two defects that turned any error into a dead end:
+
+  1. Its only way out was `<a href="/store">` — a raw href. The app is served
+     with baseURL /main, so that resolves outside the app and produces another
+     asset error. Recovering meant mouse-Back then F5, which no user should
+     have to know.
+
+  2. It rendered inside `NuxtLayout default`, which mounts the header, which
+     awaits the user object and a Tauri command. An error caused by bad app
+     state therefore risked failing the error page too.
+
+  This version has no layout and no data dependencies, and recovers through
+  `clearError({ redirect })` so the transient error state is actually cleared
+  rather than navigated around.
+-->
 <template>
-  <NuxtLayout name="default">
-    <div
-      class="grid min-h-full grid-cols-1 grid-rows-[1fr,auto,1fr] lg:grid-cols-[max(50%,36rem),1fr]"
-    >
-      <header
-        class="mx-auto w-full max-w-7xl px-6 pt-6 sm:pt-10 lg:col-span-2 lg:col-start-1 lg:row-start-1 lg:px-8"
+  <div
+    class="min-h-screen w-full flex flex-col items-center justify-center bg-zinc-900 px-6 text-center"
+  >
+    <Logo class="h-10 w-auto mb-10 opacity-80" />
+
+    <h1 class="text-3xl sm:text-4xl font-bold font-display text-zinc-100">
+      {{ title }}
+    </h1>
+
+    <p class="mt-4 max-w-md text-base leading-7 text-zinc-400">
+      {{ description }}
+    </p>
+
+    <div class="mt-10 flex flex-col sm:flex-row items-center gap-3">
+      <button
+        @click="() => backToLibrary()"
+        type="button"
+        class="transition-transform duration-300 hover:scale-105 active:scale-95 inline-flex items-center justify-center rounded-md bg-blue-600 px-6 py-3 font-semibold text-white shadow-xl hover:bg-blue-700 uppercase font-display"
       >
-        <Logo class="h-10 w-auto sm:h-12" />
-        
-      </header>
-      <main
-        class="mx-auto w-full max-w-7xl px-6 py-24 sm:py-32 lg:col-span-2 lg:col-start-1 lg:row-start-2 lg:px-8"
+        Back to library
+      </button>
+
+      <!-- Deliberately absent for a route that does not exist: retrying it
+           would fail identically and invite an error loop. -->
+      <button
+        v-if="canRetry"
+        @click="() => retry()"
+        type="button"
+        class="transition inline-flex items-center justify-center rounded-md bg-zinc-800 px-6 py-3 font-semibold text-zinc-100 ring-1 ring-inset ring-zinc-700 hover:bg-zinc-700 uppercase font-display"
       >
-        <div class="max-w-lg">
-          <p class="text-base font-semibold leading-8 text-blue-600">
-            {{ error?.statusCode }}
-          </p>
-          <h1
-            class="mt-4 text-3xl font-bold font-display tracking-tight text-zinc-100 sm:text-5xl"
-          >
-            Oh no!
-          </h1>
-          <p
-            v-if="message"
-            class="mt-3 font-bold text-base leading-7 text-red-500"
-          >
-            {{ message }}
-          </p>
-          <p class="mt-6 text-base leading-7 text-zinc-400">
-            An error occurred while responding to your request. If you believe
-            this to be a bug, please report it. Try signing in and see if it
-            resolves the issue.
-          </p>
-          <div class="mt-10">
-            <!-- full app reload to fix errors -->
-            <a
-              href="/store"
-              class="text-sm font-semibold leading-7 text-blue-600"
-              ><span aria-hidden="true">&larr;</span> Back to store</a
-            >
-          </div>
-        </div>
-      </main>
-      <footer class="self-end lg:col-span-2 lg:col-start-1 lg:row-start-3">
-        <div class="border-t border-zinc-700 bg-zinc-900 py-10">
-          <nav
-            class="mx-auto flex w-full max-w-7xl items-center gap-x-4 px-6 text-sm leading-7 text-zinc-400 lg:px-8"
-          >
-            <NuxtLink href="/docs">Documentation</NuxtLink>
-            <svg
-              viewBox="0 0 2 2"
-              aria-hidden="true"
-              class="h-0.5 w-0.5 fill-zinc-600"
-            >
-              <circle cx="1" cy="1" r="1" />
-            </svg>
-            <a href="https://discord.gg/NHx46XKJWA" target="_blank"
-              >Support Discord</a
-            >
-          </nav>
-        </div>
-      </footer>
-      <div
-        class="hidden lg:relative lg:col-start-2 lg:row-start-1 lg:row-end-4 lg:block"
-      >
-        <img
-          src="@/assets/wallpaper.jpg"
-          alt=""
-          class="absolute inset-0 h-full w-full object-cover"
-        />
-      </div>
+        Retry
+      </button>
     </div>
-  </NuxtLayout>
+
+    <p v-if="detail" class="mt-10 max-w-lg text-xs text-zinc-600 break-words">
+      {{ detail }}
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">
 import type { NuxtError } from "#app";
+import { classifyError, ErrorKind } from "~/composables/zougcloud-errors";
 
 const props = defineProps({
   error: Object as () => NuxtError,
 });
 
-const statusCode = props.error?.statusCode;
-const message =
-  props.error?.statusMessage ||
-  props.error?.message ||
-  "An unknown error occurred.";
+const kind = computed(() => classifyError(props.error));
+
+const title = computed(() => {
+  switch (kind.value) {
+    case ErrorKind.NotFound:
+      return "Page not found";
+    case ErrorKind.ServerUnavailable:
+      return "ZougCloud server unavailable";
+    default:
+      return "Something went wrong";
+  }
+});
+
+const description = computed(() => {
+  switch (kind.value) {
+    case ErrorKind.NotFound:
+      return "That page doesn't exist in Drop.";
+    case ErrorKind.ServerUnavailable:
+      return "Drop couldn't reach the ZougCloud server.";
+    default:
+      return "Drop couldn't load this page.";
+  }
+});
+
+// A missing route cannot succeed on a second attempt, so offering Retry there
+// would only walk the user into the same error again.
+const canRetry = computed(() => kind.value !== ErrorKind.NotFound);
+
+const detail = computed(() =>
+  props.error?.statusMessage || props.error?.message || undefined,
+);
+
+/**
+ * One click back to a working Library.
+ *
+ * `clearError` is what makes this a real recovery rather than a navigation:
+ * it drops Nuxt's error state and then routes, so the app is not left holding
+ * the broken state that caused the error.
+ */
+async function backToLibrary() {
+  await clearError({ redirect: "/library" });
+}
+
+async function retry() {
+  // Re-enter the route that failed. Falls back to the library rather than
+  // risking a reload into the same broken state.
+  const target = props.error?.url && props.error.url !== "/" ? props.error.url : "/library";
+  await clearError({ redirect: target });
+}
 
 console.error(props.error);
 </script>

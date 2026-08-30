@@ -8,7 +8,8 @@
     "dev": "nuxt dev",
     "postinstall": "nuxt prepare",
     "tauri": "tauri",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "test": "vitest run"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.9",
+    "vitest": "^3.2.4",
     "@tailwindcss/typography": "^0.5.15",
     "@types/markdown-it": "^14.1.2",
     "autoprefixer": "^10.4.20",
