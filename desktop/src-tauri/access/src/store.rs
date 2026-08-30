@@ -542,10 +542,10 @@ mod last_known_good {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut c = cache(&dir);
 
-        let text = r#"{"schemaVersion":1,"revision":1,"games":{
+        let text = r#"{"schemaVersion":2,"revision":1,"games":{
             "free-game":{"accessMode":"free"},
-            "all-game":{"accessMode":"all"},
-            "gated-game":{"accessMode":"gated"}},"users":{}}"#;
+            "gated-game":{"accessMode":"gated"}},
+            "users":{"all-member":{"accessMode":"all","allowedGames":[]}}}"#;
         apply_response(
             &mut c,
             ManifestResponse::Body {
@@ -555,16 +555,24 @@ mod last_known_good {
             1,
         );
 
+        let m = c.manifest().expect("data");
+
+        // Someone who has never been configured is Custom by default.
         let stranger = Viewer {
             user_id: "never-seen-before".to_owned(),
             username: "newcomer".to_owned(),
         };
-        let m = c.manifest().expect("data");
-
         assert!(crate::is_game_accessible(m, &stranger, "free-game"));
-        assert!(crate::is_game_accessible(m, &stranger, "all-game"));
         assert!(!crate::is_game_accessible(m, &stranger, "gated-game"));
-        // And a game with no policy at all stays denied.
         assert!(!crate::is_game_accessible(m, &stranger, "unlisted"));
+
+        // An All member gets everything, including a game with no policy.
+        let everything = Viewer {
+            user_id: "all-member".to_owned(),
+            username: "bob".to_owned(),
+        };
+        assert!(crate::is_game_accessible(m, &everything, "free-game"));
+        assert!(crate::is_game_accessible(m, &everything, "gated-game"));
+        assert!(crate::is_game_accessible(m, &everything, "unlisted"));
     }
 }

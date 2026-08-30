@@ -18,7 +18,7 @@ pub mod store;
 
 pub use model::{
     ADMIN_USERNAME, AccessDecision, AccessManifest, AccessMode, GamePolicy, Price, SCHEMA_VERSION,
-    UserGrants, Viewer,
+    MemberMode, UserGrants, Viewer,
 };
 pub use state::ACCESS;
 pub use store::ManifestCache;
@@ -27,7 +27,7 @@ pub use store::ManifestCache;
 ///
 /// Precedence, highest first:
 /// 1. the admin bypasses everything;
-/// 2. `all` overrides every per-user rule, including a missing user entry;
+/// 2. a member whose mode is `All` gets every game;
 /// 3. `free` needs no grant;
 /// 4. `gated` needs an explicit grant;
 /// 5. anything else fails closed.
@@ -36,16 +36,21 @@ pub fn decide(manifest: &AccessManifest, viewer: &Viewer, game_id: &str) -> Acce
         return AccessDecision::AllowedAsAdmin;
     }
 
+    // Evaluated *before* the game is looked up, and that ordering is the
+    // feature: "All games" has to include games that are not in the manifest
+    // yet, or the admin would have to revisit every All member each time a
+    // game is imported.
+    if member_mode(manifest, &viewer.user_id) == MemberMode::All {
+        return AccessDecision::AllowedAsAllMember;
+    }
+
     let Some(policy) = manifest.games.get(game_id) else {
-        // A game with no policy is not implicitly free: a member must never
-        // gain access because an admin forgot to configure something.
+        // An unconfigured game is not implicitly free: a Custom member must
+        // never gain access because an admin has not filled in a policy yet.
         return AccessDecision::DeniedUnknownPolicy;
     };
 
     match policy.access_mode {
-        // Checked before any user lookup, which is what makes `all` immune to
-        // a member being absent from the manifest or explicitly ungranted.
-        Some(AccessMode::All) => AccessDecision::AllowedForEveryone,
         Some(AccessMode::Free) => AccessDecision::AllowedAsFree,
         Some(AccessMode::Gated) => {
             if has_grant(manifest, &viewer.user_id, game_id) {
@@ -58,6 +63,16 @@ pub fn decide(manifest: &AccessManifest, viewer: &Viewer, game_id: &str) -> Acce
         // newer ZougCloud. Fail closed for members; the admin still bypasses.
         None => AccessDecision::DeniedUnknownPolicy,
     }
+}
+
+/// A member's mode, defaulting to the restrictive `Custom` when they are not
+/// in the manifest at all.
+pub fn member_mode(manifest: &AccessManifest, user_id: &str) -> MemberMode {
+    manifest
+        .users
+        .get(user_id)
+        .map(|grants| grants.access_mode)
+        .unwrap_or_default()
 }
 
 fn has_grant(manifest: &AccessManifest, user_id: &str, game_id: &str) -> bool {
@@ -143,6 +158,7 @@ mod tests {
             users.insert(
                 (*user).to_owned(),
                 UserGrants {
+                    access_mode: MemberMode::Custom,
                     allowed_games: allowed.iter().map(|g| (*g).to_owned()).collect(),
                 },
             );
@@ -152,6 +168,18 @@ mod tests {
             users,
             ..Default::default()
         }
+    }
+
+    /// Mark a member as `All games`.
+    fn with_all_member(mut m: AccessManifest, user: &str) -> AccessManifest {
+        m.users.insert(
+            user.to_owned(),
+            UserGrants {
+                access_mode: MemberMode::All,
+                allowed_games: Vec::new(),
+            },
+        );
+        m
     }
 
     // --- admin ------------------------------------------------------------
@@ -190,22 +218,52 @@ mod tests {
     // --- all --------------------------------------------------------------
 
     #[test]
-    fn an_all_game_is_available_to_a_member_with_no_manifest_entry() {
-        let m = manifest(Some(AccessMode::All), &[]);
-        let d = decide(&m, &member("unknown-brand-new-member"), GAME);
-        assert_eq!(d, AccessDecision::AllowedForEveryone);
-        assert!(!d.offers_interest());
+    fn an_all_member_gets_a_gated_game_without_any_grant() {
+        let m = with_all_member(manifest(Some(AccessMode::Gated), &[]), BOB);
+        let d = decide(&m, &member(BOB), GAME);
+        assert_eq!(d, AccessDecision::AllowedAsAllMember);
+        assert!(!d.offers_interest(), "an All member is never asked to register interest");
     }
 
     #[test]
-    fn a_user_entry_cannot_override_all() {
-        // Bob exists in the manifest and is granted only OTHER: `all` must
-        // still win. This is the precedence the mandate requires.
-        let m = manifest(Some(AccessMode::All), &[(BOB, &[OTHER])]);
+    fn an_all_member_gets_a_game_that_is_not_in_the_manifest_at_all() {
+        // The point of "All games": a game imported into Drop but never given
+        // a policy is still available, so the admin does not have to revisit
+        // every All member each time they add something.
+        let m = with_all_member(AccessManifest::default(), BOB);
         assert_eq!(
-            decide(&m, &member(BOB), GAME),
-            AccessDecision::AllowedForEveryone
+            decide(&m, &member(BOB), "a-brand-new-unconfigured-game"),
+            AccessDecision::AllowedAsAllMember
         );
+    }
+
+    #[test]
+    fn an_all_member_needs_no_entry_in_allowed_games() {
+        let m = with_all_member(manifest(Some(AccessMode::Gated), &[]), BOB);
+        assert!(m.users[BOB].allowed_games.is_empty());
+        assert!(is_game_accessible(&m, &member(BOB), GAME));
+    }
+
+    #[test]
+    fn a_member_absent_from_the_manifest_is_custom_not_all() {
+        // The restrictive default. Getting this backwards would hand the whole
+        // catalogue to anyone who signs in.
+        let m = manifest(Some(AccessMode::Gated), &[]);
+        assert_eq!(member_mode(&m, "never-configured"), MemberMode::Custom);
+        assert_eq!(
+            decide(&m, &member("never-configured"), GAME),
+            AccessDecision::DeniedGated
+        );
+    }
+
+    #[test]
+    fn an_unreadable_member_mode_falls_back_to_custom() {
+        let json = r#"{"schemaVersion":2,"revision":1,
+            "games":{"g":{"accessMode":"gated"}},
+            "users":{"u":{"accessMode":"superuser","allowedGames":[]}}}"#;
+        let parsed: AccessManifest = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.users["u"].access_mode, MemberMode::Custom);
+        assert!(!is_game_accessible(&parsed, &member("u"), "g"));
     }
 
     // --- gated ------------------------------------------------------------
@@ -332,14 +390,27 @@ mod tests {
     }
 
     #[test]
-    fn all_to_gated_falls_back_to_normal_gated_rules() {
-        let mut m = manifest(Some(AccessMode::All), &[]);
+    fn a_member_moved_from_all_to_custom_loses_ungranted_gated_games() {
+        // Bob had everything, installed a gated game, then the admin moved him
+        // to Custom without granting it. Access goes away -- and nothing else
+        // does: no caller here deletes anything, which is what keeps his
+        // installed files, saves and Steam shortcut intact.
+        let m = with_all_member(manifest(Some(AccessMode::Gated), &[]), BOB);
         assert!(is_game_accessible(&m, &member(BOB), GAME));
 
-        m.games.get_mut(GAME).unwrap().access_mode = Some(AccessMode::Gated);
+        let m = manifest(Some(AccessMode::Gated), &[(BOB, &[])]);
+        assert_eq!(decide(&m, &member(BOB), GAME), AccessDecision::DeniedGated);
+    }
+
+    #[test]
+    fn a_member_moved_from_custom_to_all_gains_access_with_no_grants_added() {
+        let m = manifest(Some(AccessMode::Gated), &[(BOB, &[])]);
+        assert!(!is_game_accessible(&m, &member(BOB), GAME));
+
+        let m = with_all_member(m, BOB);
         assert_eq!(
             decide(&m, &member(BOB), GAME),
-            AccessDecision::DeniedGated
+            AccessDecision::AllowedAsAllMember
         );
     }
 

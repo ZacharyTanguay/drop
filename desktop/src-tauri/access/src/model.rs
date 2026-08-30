@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// Bump when the on-disk/on-remote shape changes.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The Drop username that always bypasses every access rule.
 ///
@@ -14,6 +14,11 @@ pub const ADMIN_USERNAME: &str = "zacktanguay";
 
 /// How a game is made available.
 ///
+/// Only two modes. "Everyone gets everything" is a property of a *member*
+/// (see [`MemberMode::All`]), not of a game — an earlier draft put `all` here
+/// and it made the model ambiguous: a game-level `all` and a member-level
+/// `all` answer different questions.
+///
 /// `Free` and a price of zero are deliberately *not* the same thing: a game can
 /// be gated with no price configured yet, and a free game never needs a price.
 /// Conflating them would make "no price set" silently grant access.
@@ -22,10 +27,22 @@ pub const ADMIN_USERNAME: &str = "zacktanguay";
 pub enum AccessMode {
     /// Available to every member without an individual grant.
     Free,
-    /// Requires an explicit per-member grant.
+    /// Requires an explicit per-member grant, unless the member is `All`.
     Gated,
-    /// Always available to everyone, overriding any per-user configuration —
-    /// including an absent one. Used for games that must never be hidden.
+}
+
+/// How much of the catalogue a member gets.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MemberMode {
+    /// Free games, plus whatever gated games they are granted individually.
+    /// The default for anyone not configured.
+    #[default]
+    Custom,
+    /// Every game, now and in future — including gated games with no grant,
+    /// and including games that are not in the manifest at all. That last part
+    /// is the whole point: the admin must not have to revisit this member each
+    /// time a game is imported.
     All,
 }
 
@@ -67,8 +84,22 @@ pub struct GamePolicy {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UserGrants {
+    /// Absent, or a value this build cannot read, falls back to `Custom` —
+    /// the restrictive option. An unreadable member policy must never be
+    /// mistaken for "give them everything".
+    #[serde(default, deserialize_with = "lenient_member_mode")]
+    pub access_mode: MemberMode,
+    /// Only consulted for a `Custom` member and a `Gated` game.
     #[serde(default)]
     pub allowed_games: Vec<String>,
+}
+
+fn lenient_member_mode<'de, D>(deserializer: D) -> Result<MemberMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -118,8 +149,9 @@ impl Viewer {
 pub enum AccessDecision {
     /// Admin bypass.
     AllowedAsAdmin,
-    /// `accessMode: all` — never hidden, never gated.
-    AllowedForEveryone,
+    /// The member is `All`: every game, including ones absent from the
+    /// manifest.
+    AllowedAsAllMember,
     /// `accessMode: free`.
     AllowedAsFree,
     /// `accessMode: gated` with an explicit grant.
