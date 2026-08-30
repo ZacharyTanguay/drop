@@ -24,8 +24,13 @@
         class="absolute bg-zinc-900 right-0 top-10 z-50 w-56 origin-top-right focus:outline-none shadow-md"
       >
         <div class="flex-col gap-y-2">
+          <!-- ZOUGCLOUD(ZC-012): upstream links this to /id/me, but the Desktop
+               has no pages/id/ route at all. In the Tauri SPA an unknown route
+               becomes an asset request, so clicking your own name produced
+               "asset not found: main/id/me" and a black screen with no way back.
+               /settings/account is the real account page this was reaching for. -->
           <NuxtLink
-            to="/id/me"
+            to="/settings/account"
             class="transition inline-flex items-center w-full py-3 px-4 hover:bg-zinc-800"
           >
             <div class="inline-flex items-center text-zinc-300">
