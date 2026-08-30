@@ -1435,9 +1435,11 @@ dependencies = [
 name = "drop-app"
 version = "0.4.0-zc.4"
 dependencies = [
+ "access",
  "anyhow",
  "async-trait",
  "atomic-instant-full",
+ "base64 0.22.1",
  "bitcode",
  "bytes",
  "cacache 13.1.0",
@@ -1456,6 +1458,7 @@ dependencies = [
  "http 1.4.0",
  "http-serde 2.1.1",
  "humansize",
+ "keyring",
  "known-folders",
  "libloading",
  "log",

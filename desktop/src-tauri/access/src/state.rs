@@ -13,7 +13,7 @@ use std::{
 
 use crate::{
     model::{AccessDecision, AccessManifest, Viewer},
-    store::ManifestCache,
+    store::{ApplyOutcome, ManifestCache, ManifestResponse},
 };
 
 pub static ACCESS: AccessState = AccessState::new();
@@ -78,6 +78,17 @@ impl AccessState {
     pub fn touch(&self, now: i64) {
         let Some(inner) = self.0.get() else { return };
         inner.lock().cache.touch(now);
+    }
+
+    /// Fold one poll result into the cache. All the interesting behaviour —
+    /// notably keeping the last known-good manifest when the remote misbehaves
+    /// — lives in [`crate::store::apply_response`], which is tested without a
+    /// network.
+    pub fn apply(&self, response: ManifestResponse, now: i64) -> ApplyOutcome {
+        let Some(inner) = self.0.get() else {
+            return ApplyOutcome::NoPolicy;
+        };
+        crate::store::apply_response(&mut inner.lock().cache, response, now)
     }
 
     /// The decision for one game.

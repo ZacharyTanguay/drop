@@ -59,6 +59,7 @@ use tauri_plugin_dialog::DialogExt;
 use url::Url;
 use utils::app_emit;
 
+mod access_provider; // ZOUGCLOUD(ZC-011)
 mod client;
 mod collections;
 mod download_manager;
@@ -85,6 +86,7 @@ use crate::scheduler::scheduler_task;
 // ZOUGCLOUD(ZC-004): spelled out rather than glob-imported like the modules
 // above, because `steam` is also the name of the workspace crate this module
 // wraps and a glob would be ambiguous.
+use crate::access_provider::{access_manifest_path, poll_task};
 use crate::playtime::{fetch_playtime, playtime_watcher, playtime_path};
 use crate::steam::{
     steam_add_shortcut, steam_game_status, steam_grid_dir, steam_open_shortcut,
@@ -126,6 +128,10 @@ async fn setup(handle: AppHandle) -> AppState {
     // reach begin_session with an uninitialised tracker.
     ::playtime::PlaytimeWrapper::init(playtime_path());
 
+    // ZOUGCLOUD(ZC-011): loads the cached manifest. Until a user is known the
+    // state denies everything, so this cannot leak access on the way up.
+    ::access::state::AccessState::init(access_manifest_path());
+
     ProcessManagerWrapper::init(handle.clone());
     DownloadManagerWrapper::init(handle.clone());
 
@@ -155,6 +161,15 @@ async fn setup(handle: AppHandle) -> AppState {
 
     // TODO: Account for possible failure
     let (app_status, user) = auth::setup().await;
+
+    // ZOUGCLOUD(ZC-011): tell the access state who is signed in. This works
+    // offline too: upstream caches the User locally and returns it from that
+    // cache when the network is down, so the admin is still recognised with
+    // Tailscale off and the server unreachable.
+    ::access::ACCESS.set_viewer(user.as_ref().map(|u| ::access::Viewer {
+        user_id: u.id().to_owned(),
+        username: u.username().to_owned(),
+    }));
 
     let db_handle = borrow_db_checked();
     let mut missing_games = Vec::new();
@@ -482,6 +497,10 @@ pub fn run() {
                     let watcher_handle = app.handle().clone();
                     tokio::spawn(async move { playtime_watcher(watcher_handle).await });
                 }
+                // ZOUGCLOUD(ZC-011): keep the access manifest current. The
+                // first tick is immediate, so a launch picks up an admin's
+                // changes without waiting out the interval.
+                tokio::spawn(async move { poll_task().await });
             });
 
             Ok(())
