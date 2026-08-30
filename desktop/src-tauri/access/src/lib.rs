@@ -9,13 +9,18 @@
 //! proxy guard can never drift apart. Adding a new surface means calling this,
 //! not writing another condition.
 
+#![feature(nonpoison_mutex)]
+#![feature(sync_nonpoison)]
+
 pub mod model;
+pub mod state;
 pub mod store;
 
 pub use model::{
     ADMIN_USERNAME, AccessDecision, AccessManifest, AccessMode, GamePolicy, Price, SCHEMA_VERSION,
     UserGrants, Viewer,
 };
+pub use state::ACCESS;
 pub use store::ManifestCache;
 
 /// Decide whether `viewer` may have `game_id`.
