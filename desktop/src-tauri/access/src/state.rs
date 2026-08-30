@@ -122,6 +122,31 @@ impl AccessState {
     pub fn is_accessible(&self, game_id: &str) -> bool {
         self.decide(game_id).is_allowed()
     }
+
+    /// The configured price, if any. `None` means no price is set — which is
+    /// not the same as free, and callers must not render it as such.
+    pub fn price(&self, game_id: &str) -> Option<crate::model::Price> {
+        let inner = self.0.get()?;
+        let guard = inner.lock();
+        crate::price_for(guard.cache.manifest()?, game_id).cloned()
+    }
+
+    /// The signed-in member's own mode, for the admin UI and for deciding
+    /// whether to offer the interest flow at all.
+    pub fn viewer_mode(&self) -> crate::model::MemberMode {
+        let Some(inner) = self.0.get() else {
+            return crate::model::MemberMode::Custom;
+        };
+        let guard = inner.lock();
+        let Some(viewer) = guard.viewer.as_ref() else {
+            return crate::model::MemberMode::Custom;
+        };
+        guard
+            .cache
+            .manifest()
+            .map(|m| crate::member_mode(m, &viewer.user_id))
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

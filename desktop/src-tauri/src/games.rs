@@ -11,7 +11,7 @@ use games::{
     library::{FetchGameStruct, Game, get_current_meta, uninstall_game_logic},
     state::{GameStatusManager, GameStatusWithTransient},
 };
-use log::warn;
+use log::{debug, warn};
 use process::PROCESS_MANAGER;
 use remote::{
     auth::generate_authorization_header,
@@ -32,7 +32,7 @@ pub async fn fetch_library(
     app_handle: AppHandle,
     hard_refresh: Option<bool>,
 ) -> Result<FetchLibraryResponse, RemoteAccessError> {
-    offline!(
+    let response = offline!(
         state,
         fetch_library_logic,
         fetch_library_logic_offline,
@@ -40,7 +40,13 @@ pub async fn fetch_library(
         app_handle,
         hard_refresh
     )
-    .await
+    .await?;
+
+    // ZOUGCLOUD(ZC-011): filter here, at the command boundary, rather than
+    // inside the logic. The cache underneath keeps the full library, so an
+    // access change takes effect on the next read without refetching from the
+    // server — and the same filter covers the offline path for free.
+    Ok(response.filtered_for_viewer())
 }
 
 #[derive(Encode, Decode, Serialize)]
@@ -353,6 +359,15 @@ pub async fn fetch_game(
     game_id: String,
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<FetchGameStruct, RemoteAccessError> {
+    // ZOUGCLOUD(ZC-011): a direct route to a game the member may not have.
+    // GameNotFound is the honest answer from their point of view, and it is an
+    // existing variant, so this needs no upstream change. The error page (ZC-012)
+    // classifies it as not-found and offers Back to Library rather than a Retry
+    // that could only fail the same way.
+    if !::access::ACCESS.is_accessible(&game_id) {
+        return Err(RemoteAccessError::GameNotFound(game_id));
+    }
+
     offline!(
         state,
         fetch_game_logic,
@@ -418,4 +433,172 @@ pub fn update_game_configuration(
         .insert(version.to_string(), existing_configuration);
 
     Ok(())
+}
+
+// ZOUGCLOUD(ZC-011): applying the access rules to the native surfaces.
+//
+// Every surface reads from one of two commands -- `fetch_library` (which also
+// feeds search, browse and the collection lists) and `fetch_game` -- so those
+// are the only two places that need to filter. The rule itself lives in the
+// `access` crate; nothing here re-implements it.
+
+impl FetchLibraryResponse {
+    /// Drop everything the signed-in member may not have.
+    ///
+    /// Filtering the response rather than the cache is deliberate: the cache
+    /// keeps the full library, so an access change applies on the next read
+    /// without a round trip to the server, and a member who loses access does
+    /// not need their local data rewritten.
+    fn filtered_for_viewer(self) -> Self {
+        self.filtered_with(|id| ::access::ACCESS.is_accessible(id))
+    }
+
+    /// The filtering itself, with the decision injected so it can be tested
+    /// without standing up the global access state.
+    fn filtered_with<F>(mut self, accessible: F) -> Self
+    where
+        F: Fn(&str) -> bool,
+    {
+        let before = self.library.len() + self.other.len() + self.missing.len();
+
+        self.library.retain(|game| accessible(game.id()));
+        self.other.retain(|game| accessible(game.id()));
+        self.missing.retain(|game| accessible(game.id()));
+
+        // Collections carry their own copies of games, so missing this would
+        // leave a hidden game visible in a collection while it is gone from the
+        // library — the kind of inconsistency that makes filtering look broken.
+        for collection in &mut self.collections {
+            collection.entries.retain(|entry| accessible(&entry.game_id));
+        }
+
+        let after = self.library.len() + self.other.len() + self.missing.len();
+        if before != after {
+            debug!(
+                "access filter hid {} game(s) from the library",
+                before - after
+            );
+        }
+
+        self
+    }
+}
+
+/// What the UI needs to render a game's access state.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameAccess {
+    pub decision: ::access::AccessDecision,
+    pub allowed: bool,
+    /// True only for a gated game a Custom member has not been granted. Free
+    /// games, All members and already-granted games never show interest.
+    pub offers_interest: bool,
+    /// Minor units, so the frontend renders without ever touching a float.
+    pub price_amount_minor: Option<i64>,
+    pub price_currency: Option<String>,
+    /// Pre-formatted for display, or None when no price is configured — which
+    /// is not the same as free.
+    pub price_display: Option<String>,
+}
+
+#[tauri::command]
+pub fn fetch_game_access(game_id: String) -> GameAccess {
+    let decision = ::access::ACCESS.decide(&game_id);
+    let price = ::access::ACCESS.price(&game_id);
+
+    GameAccess {
+        decision,
+        allowed: decision.is_allowed(),
+        offers_interest: decision.offers_interest(),
+        price_amount_minor: price.as_ref().map(|p| p.amount_minor),
+        price_currency: price.as_ref().map(|p| p.currency.clone()),
+        price_display: price.as_ref().map(::access::format_price),
+    }
+}
+
+/// Whether the signed-in user is the ZougCloud admin, for showing admin-only
+/// surfaces. UX only — it decides what is rendered, never what is permitted.
+#[tauri::command]
+pub fn zougcloud_is_admin() -> bool {
+    ::access::ACCESS.viewer_is_admin()
+}
+
+// ZOUGCLOUD(ZC-011): the filter is four `retain` calls, and the one most
+// easily forgotten is the collections -- a game hidden from the library but
+// still listed in a collection looks like the filter simply does not work.
+#[cfg(test)]
+mod access_filter_tests {
+    use super::*;
+    use ::games::collections::collection::CollectionObject;
+
+    const ALLOWED: &str = "allowed-game";
+    const DENIED: &str = "denied-game";
+
+    fn game(id: &str) -> Game {
+        Game {
+            id: id.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn entry(id: &str) -> CollectionObject {
+        CollectionObject {
+            game_id: id.to_owned(),
+            game: game(id),
+            ..Default::default()
+        }
+    }
+
+    fn response() -> FetchLibraryResponse {
+        // Collection's other fields are private to its crate, so it is built
+        // and then populated through the one public field.
+        let mut collection = Collection::default();
+        collection.entries = vec![entry(ALLOWED), entry(DENIED)];
+
+        FetchLibraryResponse {
+            library: vec![game(ALLOWED), game(DENIED)],
+            other: vec![game(ALLOWED), game(DENIED)],
+            missing: vec![game(ALLOWED), game(DENIED)],
+            collections: vec![collection],
+        }
+    }
+
+    #[test]
+    fn a_denied_game_disappears_from_every_surface() {
+        let filtered = response().filtered_with(|id| id == ALLOWED);
+
+        assert_eq!(filtered.library.len(), 1);
+        assert_eq!(filtered.library[0].id, ALLOWED);
+        assert_eq!(filtered.other.len(), 1);
+        assert_eq!(filtered.missing.len(), 1);
+
+        // The easy one to miss.
+        assert_eq!(filtered.collections[0].entries.len(), 1);
+        assert_eq!(filtered.collections[0].entries[0].game_id, ALLOWED);
+    }
+
+    #[test]
+    fn allowing_everything_changes_nothing() {
+        // The admin path: the response passes through untouched.
+        let filtered = response().filtered_with(|_| true);
+
+        assert_eq!(filtered.library.len(), 2);
+        assert_eq!(filtered.other.len(), 2);
+        assert_eq!(filtered.missing.len(), 2);
+        assert_eq!(filtered.collections[0].entries.len(), 2);
+    }
+
+    #[test]
+    fn denying_everything_leaves_an_empty_library_not_a_broken_one() {
+        // What a Custom member sees before any policy is configured. Empty is
+        // the intended result, and the collection survives as an empty shell
+        // rather than the response becoming malformed.
+        let filtered = response().filtered_with(|_| false);
+
+        assert!(filtered.library.is_empty());
+        assert!(filtered.other.is_empty());
+        assert!(filtered.missing.is_empty());
+        assert_eq!(filtered.collections.len(), 1);
+        assert!(filtered.collections[0].entries.is_empty());
+    }
 }

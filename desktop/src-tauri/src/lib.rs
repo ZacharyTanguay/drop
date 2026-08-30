@@ -318,6 +318,9 @@ pub fn run() {
             get_process_handlers,
             // ZOUGCLOUD(ZC-008)
             fetch_playtime,
+            // ZOUGCLOUD(ZC-011)
+            fetch_game_access,
+            zougcloud_is_admin,
             // ZOUGCLOUD(ZC-004/005/006): optional Steam integration
             steam_game_status,
             steam_add_shortcut,
