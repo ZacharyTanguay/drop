@@ -186,11 +186,41 @@ pub fn admin_token_configured() -> bool {
 #[derive(Deserialize)]
 struct ContentsResponse {
     sha: String,
+    #[serde(default)]
+    content: String,
+}
+
+/// What is actually published right now, read from the API.
+///
+/// The admin **must** edit from this and not from the raw endpoint. raw sits
+/// behind a CDN that serves a stale copy for up to five minutes, so an edit
+/// based on it can reuse a revision number or silently clobber a newer change.
+/// The round-trip test caught exactly that: it read revision 1 from the CDN
+/// while the API already held revision 2.
+pub async fn fetch_published() -> Result<(Option<String>, AccessManifest), WriteError> {
+    let token = admin_token().ok_or(WriteError::NoCredential)?;
+
+    let Some(raw) = current_contents(&token).await? else {
+        return Ok((None, AccessManifest::default()));
+    };
+
+    // The API returns base64 with newlines in it.
+    let decoded = BASE64
+        .decode(raw.content.replace(['\n', '\r'], ""))
+        .map_err(|e| WriteError::Http(format!("could not decode the manifest: {e}")))?;
+    let manifest = serde_json::from_slice::<AccessManifest>(&decoded)
+        .map_err(|e| WriteError::Http(format!("published manifest is malformed: {e}")))?;
+
+    Ok((Some(raw.sha), manifest))
 }
 
 /// Current blob SHA, which the Contents API requires to update a file. Its
 /// absence means the file does not exist yet, which is a valid create.
 async fn current_sha(token: &str) -> Result<Option<String>, WriteError> {
+    Ok(current_contents(token).await?.map(|c| c.sha))
+}
+
+async fn current_contents(token: &str) -> Result<Option<ContentsResponse>, WriteError> {
     let response = client()
         .get(contents_api_url())
         .bearer_auth(token)
@@ -214,7 +244,43 @@ async fn current_sha(token: &str) -> Result<Option<String>, WriteError> {
         .json()
         .await
         .map_err(|e| WriteError::Http(e.to_string()))?;
-    Ok(Some(parsed.sha))
+    Ok(Some(parsed))
+}
+
+/// Publish an edited manifest safely.
+///
+/// Re-reads the authoritative copy, refuses if it moved under us, bumps the
+/// revision and writes. Going through here rather than calling
+/// [`write_manifest`] directly is what stops two edits in quick succession from
+/// reusing a revision number or clobbering each other — the CDN's five-minute
+/// staleness makes that easy to do by accident.
+///
+/// The freshly published manifest is also applied locally straight away, so the
+/// admin's own client reflects their change immediately instead of waiting out
+/// the CDN and the poll.
+pub async fn publish(
+    mut edited: AccessManifest,
+    base_revision: u64,
+    message: &str,
+) -> Result<u64, WriteError> {
+    let (_, published) = fetch_published().await?;
+
+    if published.revision != base_revision {
+        return Err(WriteError::Http(format!(
+            "the manifest changed while you were editing (you started from revision \
+             {base_revision}, it is now {}). Reload and redo the change.",
+            published.revision
+        )));
+    }
+
+    edited.revision = published.revision + 1;
+    edited.schema_version = access::SCHEMA_VERSION;
+
+    write_manifest(&edited, message).await?;
+
+    let revision = edited.revision;
+    ACCESS.store(edited, None, chrono::Utc::now().timestamp());
+    Ok(revision)
 }
 
 /// Publish a manifest.
@@ -325,41 +391,80 @@ mod tests {
             );
             println!("credential found (value never read into the log)");
 
-            // 1. Read what is published.
-            let before = match fetch(None).await {
-                access::store::ManifestResponse::Body { text, etag } => {
-                    println!("fetched, etag = {etag:?}");
-                    serde_json::from_str::<AccessManifest>(&text).expect("parse published manifest")
-                }
-                other => panic!("expected a body, got {other:?}"),
+            // Give the global state somewhere disposable to live, so the
+            // "applies locally" assertion below has something to observe and
+            // the developer's real cache is left alone.
+            let scratch = tempfile::tempdir().expect("tempdir");
+            access::state::AccessState::init(scratch.path().join("visibility.json"));
+
+            // 1. Read the AUTHORITATIVE copy, not the CDN one.
+            //
+            //    An earlier version of this test read from the raw endpoint and
+            //    got revision 1 while the API already held revision 2 -- a
+            //    stale base that would have reused a revision number. That is
+            //    the mistake `fetch_published` exists to prevent.
+            let (sha, before) = fetch_published().await.expect("authoritative read");
+            println!("published revision = {} (blob {sha:?})", before.revision);
+
+            // 2. Publish through the guarded path: it re-reads, refuses if the
+            //    manifest moved, bumps the revision and applies locally.
+            let next_revision = publish(
+                before.clone(),
+                before.revision,
+                "visibility: round-trip verification",
+            )
+            .await
+            .expect("publish should succeed");
+            println!("wrote revision {next_revision}");
+
+            // The admin's own client must not wait for the CDN.
+            assert_eq!(
+                ACCESS.revision(),
+                Some(next_revision),
+                "the local state should reflect the write immediately"
+            );
+
+            // 3. A stale base must be refused rather than silently overwritten.
+            let conflict = publish(before.clone(), before.revision, "should not happen").await;
+            assert!(
+                conflict.is_err(),
+                "publishing from a stale base must be refused"
+            );
+            println!("stale-base publish correctly refused");
+
+            let next = AccessManifest {
+                revision: next_revision,
+                ..before.clone()
             };
-            println!("published revision = {}", before.revision);
 
-            // 2. Bump the revision and nothing else.
-            let mut next = before.clone();
-            next.revision = before.revision + 1;
-
-            write_manifest(&next, "visibility: round-trip verification")
-                .await
-                .expect("write should succeed");
-            println!("wrote revision {}", next.revision);
-
-            // 3. Read it back. raw.githubusercontent.com caches, so the new
-            //    revision may take a moment to appear on the CDN edge.
+            // 3. Read it back on the member path.
+            //
+            //    raw.githubusercontent.com sits behind a CDN that answers with
+            //    Cache-Control: max-age=300, so a fresh write is genuinely
+            //    invisible there for up to five minutes. That is a property of
+            //    the transport, not a fault: this loop has to outlast it, or it
+            //    reports a failure that is really just an edge cache doing its
+            //    job. Allow a margin beyond 300s.
             let mut seen = None;
-            for attempt in 0..12u32 {
-                tokio::time::sleep(Duration::from_secs(5)).await;
+            for attempt in 0..24u32 {
+                tokio::time::sleep(Duration::from_secs(20)).await;
                 if let access::store::ManifestResponse::Body { text, .. } = fetch(None).await
                     && let Ok(m) = serde_json::from_str::<AccessManifest>(&text)
                     && m.revision == next.revision
                 {
                     seen = Some(m);
-                    println!("new revision visible after {} poll(s)", attempt + 1);
+                    println!(
+                        "new revision visible on the raw endpoint after ~{}s",
+                        (attempt + 1) * 20
+                    );
                     break;
                 }
             }
 
-            let seen = seen.expect("the new revision never appeared on the raw endpoint");
+            let seen = seen.expect(
+                "the new revision never reached the raw endpoint within 8 minutes, \
+                 which is longer than its advertised cache lifetime",
+            );
             assert_eq!(seen.revision, next.revision);
             assert_eq!(
                 seen.games.len(),
